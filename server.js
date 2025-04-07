@@ -81,8 +81,8 @@ async function procesarProductos() {
 					// );
 					// return;
 
-					if (imagenPrimaria) imagenes.push({ src: imagenPrimaria });
-					if (imagenSecundaria) imagenes.push({ src: imagenSecundaria });
+					// if (imagenPrimaria) imagenes.push({ src: imagenPrimaria });
+					// if (imagenSecundaria) imagenes.push({ src: imagenSecundaria });
 
 					const productoWoo = {
 						name: item.ART_DESCRIPCION || "Producto SOAP sin nombre",
