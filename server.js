@@ -158,8 +158,13 @@ async function obtenerImagenDesdeSOAP(soapClient, urlPath) {
 	});
 }
 
-cron.schedule("*/5 * * * *", () => {
-	console.log("Ejecutando cron job: procesando productos.");
+// cron.schedule("*/5 * * * *", () => {
+// 	console.log("Ejecutando cron job: procesando productos.");
+// 	procesarProductos();
+// });
+
+cron.schedule("0 */6 * * *", () => {
+	console.log("Ejecutando cron job cada 6 horas: procesando productos.");
 	procesarProductos();
 });
 
