@@ -172,7 +172,7 @@ async function procesarProductos() {
 
 				// Guardar en un archivo JSON todos los productos
 				const json = JSON.stringify(productos, null, 2);
-				fs.writeFile("productos-all.json", json, (err) => {
+				fs.writeFile("productos-all-03.json", json, (err) => {
 					if (err) {
 						console.error("Error al escribir el archivo:", err);
 					} else {
