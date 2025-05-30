@@ -5,16 +5,26 @@ const path = require("path");
 const FormData = require("form-data");
 const xml2js = require("xml2js");
 const crypto = require("crypto");
+const logger = require("./logger");
 
 async function obtenerImagenDesdeSOAP(soapClient, urlPath) {
 	if (!urlPath) return null; // Si no hay imagen, retornar null
+	const path = urlPath;
+	const match = path.match(/\\(\d+)\\/);
+
+	if (match && match[1]) {
+		const sku = match[1];
+		console.log("ID:", id);
+	} else {
+		console.log("No se encontró un ID válido.");
+	}
 
 	return new Promise((resolve, reject) => {
 		soapClient.servicebus.servicebusSoap12.getWebfile(
 			{ url_path: urlPath },
 			function (err, result) {
 				if (err) {
-					console.error("Error al obtener la imagen:", err);
+					logger.error(`Error al obtener la imagen ${sku}: ${err}`);
 					return resolve(null);
 				}
 
@@ -33,6 +43,18 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 		typeof urlPathRaw === "string"
 			? urlPathRaw
 			: String(urlPathRaw?.url || urlPathRaw || "");
+
+	const path = urlPathRaw;
+	const match = path.match(/\\(\d+)\\/);
+
+	let sku;
+
+	if (match && match[1]) {
+		sku = match[1];
+		console.log("ID:", sku);
+	} else {
+		console.log("No se encontró un ID válido.");
+	}
 
 	const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 	<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -111,15 +133,17 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 				];
 
 			if (!ruta) {
-				console.error("❌ No se encontró la ruta en el XML.");
+				logger.error("❌ No se encontró la ruta en el XML.");
 				return null;
 			}
 
-			console.log("📂 Ruta encontrada (no se sube):", ruta);
+			logger.info(`📂 Ruta encontrada (no se sube): ${ruta}`);
 			return null; // No se sube si es una ruta local
 		}
 	} catch (err) {
-		console.error("❌ Error al obtener PDF desde SOAP:", err.message || err);
+		logger.error(
+			`❌ Error al obtener PDF desde SOAP ${sku}: ${err.message || err}`
+		);
 		return null;
 	}
 }
@@ -129,6 +153,17 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 		typeof urlPathRaw === "string"
 			? urlPathRaw
 			: String(urlPathRaw?.url || urlPathRaw || "");
+
+	const path = urlPathRaw;
+	const match = path.match(/\\(\d+)\\/);
+	let sku;
+
+	if (match && match[1]) {
+		sku = match[1];
+		console.log("ID:", sku);
+	} else {
+		console.log("No se encontró un ID válido.");
+	}
 
 	const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 	<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -179,15 +214,17 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 				];
 
 			if (!ruta) {
-				console.error("❌ No se encontró la ruta en el XML.");
+				logger.error("❌ No se encontró la ruta en el XML.");
 			} else {
-				console.log("📂 Ruta encontrada (no se sube):", ruta);
+				logger.info(`📂 Ruta encontrada (no se sube): ${ruta}`);
 			}
 
 			return null;
 		}
 	} catch (err) {
-		console.error("❌ Error al obtener PDF desde SOAP:", err.message || err);
+		logger.error(
+			`❌ Error al obtener PDF desde SOAP ${sku}: ${err.message || err}`
+		);
 		return null;
 	}
 }

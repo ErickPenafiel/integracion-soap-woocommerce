@@ -1,4 +1,5 @@
 const { obtenerImagenDesdeSOAP } = require("../src/services/soap-service");
+const logger = require("../src/services/logger");
 
 async function intentarObtenerImagen(soapClient, url, ext) {
 	const formatos = ["WEBP", "JPG", "PNG"];

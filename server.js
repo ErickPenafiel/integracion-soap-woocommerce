@@ -27,6 +27,15 @@ const {
 const { construirProductoWoo } = require("./helpers/products");
 const { intentarObtenerImagen } = require("./helpers/images");
 const { type } = require("os");
+const logger = require("./src/services/logger");
+const {
+	obtenerTodasLasCategorias,
+	procesarImagenesCategorias,
+} = require("./src/services/categorias-service");
+const {
+	obtenerTodasLasMarcas,
+	procesarMarcasWooDesdeSOAP,
+} = require("./src/services/marcas-service");
 
 const app = express();
 const port = 5000;
@@ -40,21 +49,22 @@ const wcApi = new WooCommerceRestApi({
 
 const soapUrl = process.env.SOAP_URL;
 
+const cacheBuffersPDF = new Map();
+
 async function asegurarCategoriaJerarquia(
 	nombreCategoria,
 	nombreCategoria1,
 	nombreCategoria2
 ) {
 	const niveles = [nombreCategoria, nombreCategoria1, nombreCategoria2]
-		.map((n) => n?.toString().trim()) // asegurarse que sea string y quitar espacios
-		.filter((n) => n && n.toUpperCase() !== "NULL"); // descarta null, "", "NULL"
+		.map((n) => n?.toString().trim().replace(/\s+/g, " "))
+		.filter((n) => n && n.toUpperCase() !== "NULL");
 
 	let parentId = 0;
 	let ultimaCategoriaId = null;
 
 	for (const nivel of niveles) {
 		try {
-			// Buscar categoría en este nivel
 			const response = await wcApi.get("products/categories", {
 				search: nivel,
 				parent: parentId,
@@ -73,7 +83,7 @@ async function asegurarCategoriaJerarquia(
 					name: nivel,
 					parent: parentId !== 0 ? parentId : undefined,
 				});
-				console.log(`🆕 Categoría ${nivel} creada.`);
+				logger.info(`🆕 Categoría ${nivel} creada.`);
 				ultimaCategoriaId = nueva.data.id;
 			}
 
@@ -141,7 +151,7 @@ async function procesarProductos() {
 		if (!Array.isArray(productos)) {
 			productos = [productos];
 		}
-		console.log("📦 Productos obtenidos desde SOAP:", productos.length);
+		logger.info(`📦 Productos obtenidos desde SOAP: ${productos.length}`);
 
 		// 2. Obtener cotización
 		const cotizacionResult = await new Promise((resolve, reject) => {
@@ -159,10 +169,10 @@ async function procesarProductos() {
 			cotizacionDiffgram.NewDataSet.Table.COTIZACION.replace(",", ".")
 		);
 		if (isNaN(cotizacion)) {
-			return console.error("Cotización no válida:", cotizacion);
+			return console.error(`Cotización no válida: ${cotizacion}`);
 		}
 
-		console.log("💵 Cotización obtenida desde SOAP:", cotizacion);
+		logger.info(`💵 Cotización obtenida desde SOAP: ${cotizacion}`);
 		// console.log("Producto: ", productos[0]);
 
 		await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -175,16 +185,16 @@ async function procesarProductos() {
 				.map((nombre) => nombre.trim().toUpperCase())
 		);
 
-		console.log("Marcas únicas:", nombresMarcasUnicas.size);
+		logger.info(`Marcas únicas: ${nombresMarcasUnicas.size}`);
 		const mapaMarcas = await crearMarcasBatch(nombresMarcasUnicas);
-		console.log("🆕 Marcas creadas en WooCommerce:", mapaMarcas.size);
+		logger.info(`🆕 Marcas creadas en WooCommerce ${mapaMarcas.size}`);
 
 		// Obtener todas las marcas existentes
 		const marcasExistentes = await wcApi.get("products/brands", {
 			per_page: 100,
 		});
 
-		console.log("Marcas existentes:", marcasExistentes.data.length);
+		logger.info(`Marcas existentes: ${marcasExistentes.data.length}`);
 
 		const marcas = marcasExistentes.data.map((marca) => {
 			return {
@@ -212,19 +222,26 @@ async function procesarProductos() {
 					update: actualizar,
 				});
 
-				console.log({
+				const info = {
 					...(crear.length > 0 && { creados: response.data.create.length }),
 					...(actualizar.length > 0 && {
 						actualizados: response.data.update.length,
 					}),
-				});
+				};
+
+				logger.info(`Resultado de sync: ${JSON.stringify(info)}`);
 			} catch (error) {
 				console.error("❌ Error al enviar batch:", error.message || error);
 			}
 		};
 
-		const cacheCategorias = new Map();
+		const categorias = await obtenerTodasLasCategorias();
+		await procesarImagenesCategorias(soapClient, categorias);
 
+		const marcasWp = await obtenerTodasLasMarcas();
+		await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
+
+		const cacheCategorias = new Map();
 		const limit = pLimit(5);
 
 		const chunks = chunkArray(productos, 50);
@@ -249,17 +266,127 @@ async function procesarProductos() {
 									item.URL_IMAGEN_PRIMARIA,
 									ext
 								);
+
 								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
 									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
 									if (imageUrl) imagenes.push({ src: imageUrl });
 								}
 							}
 
-							const pdfBuffer = await obtenerPDFBufferDesdeSOAP(
-								item.URL_DOCUMENTOS
-							);
+							if (
+								item.URL_IMAGEN_SECUNDARIA &&
+								item.URL_IMAGEN_SECUNDARIA.includes(".")
+							) {
+								const ext = item.URL_IMAGEN_SECUNDARIA.split(".").pop();
+								const imagenBase64 = await intentarObtenerImagen(
+									soapClient,
+									item.URL_IMAGEN_SECUNDARIA,
+									ext
+								);
+
+								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+									if (imageUrl) imagenes.push({ src: imageUrl });
+								}
+							}
+
+							if (item.URL_IMAGEN_3 && item.URL_IMAGEN_3.includes(".")) {
+								const ext = item.URL_IMAGEN_3.split(".").pop();
+								const imagenBase64 = await intentarObtenerImagen(
+									soapClient,
+									item.URL_IMAGEN_3,
+									ext
+								);
+
+								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+									if (imageUrl) imagenes.push({ src: imageUrl });
+								}
+							}
+
+							if (item.URL_IMAGEN_4 && item.URL_IMAGEN_4.includes(".")) {
+								const ext = item.URL_IMAGEN_4.split(".").pop();
+								const imagenBase64 = await intentarObtenerImagen(
+									soapClient,
+									item.URL_IMAGEN_4,
+									ext
+								);
+
+								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+									if (imageUrl) imagenes.push({ src: imageUrl });
+								}
+							}
+
+							if (item.URL_IMAGEN_5 && item.URL_IMAGEN_5.includes(".")) {
+								const ext = item.URL_IMAGEN_5.split(".").pop();
+								const imagenBase64 = await intentarObtenerImagen(
+									soapClient,
+									item.URL_IMAGEN_5,
+									ext
+								);
+
+								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+									if (imageUrl) imagenes.push({ src: imageUrl });
+								}
+							}
+
+							if (item.URL_IMAGEN_6 && item.URL_IMAGEN_6.includes(".")) {
+								const ext = item.URL_IMAGEN_6.split(".").pop();
+								const imagenBase64 = await intentarObtenerImagen(
+									soapClient,
+									item.URL_IMAGEN_6,
+									ext
+								);
+
+								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+									if (imageUrl) imagenes.push({ src: imageUrl });
+								}
+							}
+
+							if (item.URL_IMAGEN_7 && item.URL_IMAGEN_7.includes(".")) {
+								const ext = item.URL_IMAGEN_7.split(".").pop();
+								const imagenBase64 = await intentarObtenerImagen(
+									soapClient,
+									item.URL_IMAGEN_7,
+									ext
+								);
+
+								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+									if (imageUrl) imagenes.push({ src: imageUrl });
+								}
+							}
+
+							async function obtenerPDFConCache(url) {
+								if (!url) return null;
+								if (cacheBuffersPDF.has(url)) return cacheBuffersPDF.get(url);
+
+								const buffer = await obtenerPDFBufferDesdeSOAP(url);
+								if (buffer) cacheBuffersPDF.set(url, buffer);
+
+								return buffer;
+							}
+
+							const pdfBuffer = await obtenerPDFConCache(item.URL_DOCUMENTOS);
 							const pdf = pdfBuffer
 								? await subirPDFaWordPress(pdfBuffer)
+								: null;
+
+							const fichaTecnicaBuffer = await obtenerPDFConCache(
+								item.URL_FICHA_TECNICA
+							);
+							const fichaTecnica = fichaTecnicaBuffer
+								? await subirPDFaWordPress(fichaTecnicaBuffer)
+								: null;
+
+							const dimensionalBuffer = await obtenerPDFConCache(
+								item.URL_DIMENSIONAL
+							);
+							const dimensional = dimensionalBuffer
+								? await subirPDFaWordPress(dimensionalBuffer)
 								: null;
 
 							const marcasIds = item.MARCA
@@ -275,25 +402,37 @@ async function procesarProductos() {
 							let categoriasIds = [];
 
 							if (!cacheCategorias.has(categoriasName)) {
-								const promesaCategoria = asegurarCategoriaJerarquia(
+								const categoriaId = await asegurarCategoriaJerarquia(
 									item.FAMILIA?.trim(),
 									item.FAMILIA_NIVEL1?.trim(),
 									item.FAMILIA_NIVEL2?.trim()
 								);
 
-								cacheCategorias.set(categoriasName, promesaCategoria);
-								await new Promise((resolve) => setTimeout(resolve, 1500));
+								if (categoriaId != null) {
+									cacheCategorias.set(
+										categoriasName,
+										Promise.resolve(categoriaId)
+									);
+									await new Promise((resolve) => setTimeout(resolve, 1500));
+								} else {
+									console.warn(
+										`⚠️ No se pudo crear/obtener categoría para: ${categoriasName}`
+									);
+								}
 							}
 
 							const categoriaIdFinal = await cacheCategorias.get(
 								categoriasName
 							);
-							categoriasIds = [
-								{
-									id: categoriaIdFinal,
-								},
-							];
-							console.log("Categoría ID:", categoriasIds);
+
+							if (categoriaIdFinal != null) {
+								categoriasIds = [
+									{
+										id: categoriaIdFinal,
+									},
+								];
+							}
+							logger.info(`Categoría ID: ${JSON.stringify(categoriasIds)}`);
 
 							let existente = await wcApi.get("products", {
 								sku: item.ART_CODIGO,
@@ -308,7 +447,9 @@ async function procesarProductos() {
 								pdf,
 								categoriasIds,
 								cotizacion,
-								marcasIds
+								marcasIds,
+								fichaTecnica,
+								dimensional
 							);
 
 							if (existente) {
@@ -318,22 +459,23 @@ async function procesarProductos() {
 								if (!_.isEqual(productoWoo, productoExistenteMapeado)) {
 									productoWoo.id = existente.id;
 
-									console.log(
+									logger.info(
 										`🆕 Producto ${item.ART_CODIGO} SKU: ${productoWoo.sku} actualizar`
 									);
 
 									productosParaActualizar.push(productoWoo);
 								}
 							} else {
-								console.log(
+								logger.info(
 									`🆕 Producto ${item.ART_CODIGO} SKU: ${productoWoo.sku}, crear`
 								);
 								productosParaCrear.push(productoWoo);
 							}
 						} catch (error) {
-							console.error(
-								`❌ Error procesando SKU ${item.ART_CODIGO}:`,
-								error.message
+							logger.error(
+								`❌ Error procesando SKU ${item.ART_CODIGO}: ${
+									error.message || error
+								}`
 							);
 						}
 					})
@@ -347,7 +489,7 @@ async function procesarProductos() {
 			}
 		}
 
-		console.log("✅ Proceso de sincronización finalizado.");
+		logger.info("✅ Proceso de sincronización finalizado.");
 	});
 }
 

@@ -27,14 +27,45 @@ const wcApi = new WooCommerceRestApi({
 	version: "wc/v3",
 });
 
+function redondearUSD(valor) {
+	const v = parseFloat(valor);
+	if (v < 10) {
+		return Math.ceil(v * 10) / 10;
+	} else if (v < 100) {
+		return Math.ceil(v * 10) / 10;
+	} else if (v < 1000) {
+		return Math.ceil(v);
+	} else {
+		const entero = Math.ceil(v);
+		const resto = entero % 10;
+		return resto === 0 ? entero : entero + (10 - resto);
+	}
+}
+
+function formatearUSD(valor) {
+	const redondeado = redondearUSD(valor);
+	let opcionesFormato;
+
+	if (valor < 10) {
+		opcionesFormato = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+	} else if (valor < 100) {
+		opcionesFormato = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+	} else {
+		opcionesFormato = { minimumFractionDigits: 0, maximumFractionDigits: 0 };
+	}
+
+	console.log(`USD ${redondeado.toLocaleString("de-DE", opcionesFormato)}`);
+	return `${redondeado.toLocaleString("de-DE", opcionesFormato)}`;
+}
+
 async function asegurarCategoriaJerarquia(
 	nombreCategoria,
 	nombreCategoria1,
 	nombreCategoria2
 ) {
 	const niveles = [nombreCategoria, nombreCategoria1, nombreCategoria2]
-		.map((n) => n?.toString().trim()) // asegurarse que sea string y quitar espacios
-		.filter((n) => n && n.toUpperCase() !== "NULL"); // descarta null, "", "NULL"
+		.map((n) => n?.toString().trim().replace(/\s+/g, " "))
+		.filter((n) => n && n.toUpperCase() !== "NULL");
 
 	let parentId = 0;
 	let ultimaCategoriaId = null;
@@ -53,6 +84,9 @@ async function asegurarCategoriaJerarquia(
 			);
 
 			if (categoriaExistente) {
+				console.log(
+					`🆕 Categoría ${nivel} ya existe con ID ${categoriaExistente.id}.`
+				);
 				ultimaCategoriaId = categoriaExistente.id;
 			} else {
 				// Crear categoría nueva en este nivel
@@ -101,7 +135,7 @@ async function crearMarcasBatch(nombresMarcas) {
 }
 
 async function procesarProductos() {
-	const productos = require("./productos-all.json");
+	const productos = require("./productos-all-02.json");
 	console.log("📦 Productos obtenidos desde JSON:", productos.length);
 
 	let cotizacion = 8006;
@@ -193,26 +227,41 @@ async function procesarProductos() {
 						let categoriasIds = [];
 
 						if (!cacheCategorias.has(categoriasName)) {
-							const promesaCategoria = asegurarCategoriaJerarquia(
+							const categoriaId = await asegurarCategoriaJerarquia(
 								item.FAMILIA?.trim(),
 								item.FAMILIA_NIVEL1?.trim(),
 								item.FAMILIA_NIVEL2?.trim()
 							);
 
-							cacheCategorias.set(categoriasName, promesaCategoria);
-							await new Promise((resolve) => setTimeout(resolve, 1500));
+							if (categoriaId != null) {
+								cacheCategorias.set(
+									categoriasName,
+									Promise.resolve(categoriaId)
+								);
+								await new Promise((resolve) => setTimeout(resolve, 1500));
+							} else {
+								console.warn(
+									`⚠️ No se pudo crear/obtener categoría para: ${categoriasName}`
+								);
+							}
 						}
 
 						const categoriaIdFinal = await cacheCategorias.get(categoriasName);
-						categoriasIds = [
-							{
-								id: categoriaIdFinal,
-							},
-						];
+
+						if (categoriaIdFinal != null) {
+							categoriasIds = [
+								{
+									id: categoriaIdFinal,
+								},
+							];
+						}
+
+						console.log("Categorias Ids", categoriasIds);
 
 						let existente = await wcApi.get("products", {
 							sku: item.ART_CODIGO,
 						});
+
 						if (existente && existente.data.length > 0) {
 							existente = existente.data[0];
 						}
@@ -233,11 +282,37 @@ async function procesarProductos() {
 							if (!_.isEqual(productoWoo, productoExistenteMapeado)) {
 								productoWoo.id = existente.id;
 
-								productoWoo.images = productoExistenteMapeado.images;
-								productoWoo.meta_data = productoExistenteMapeado.meta_data;
+								// ✅ Actualizar solo "precio_usd_web" dentro de meta_data
+								const nuevoValorUSD = formatearUSD(item.PREC_WEB);
+
+								// Buscar si ya existe el metadato "precio_usd_web"
+								const metaExistente = productoExistenteMapeado.meta_data.find(
+									(m) => m.key === "precio_usd_web"
+								);
+
+								// Reemplazar solo el valor de "precio_usd_web", mantener los demás
+								productoWoo.meta_data = productoExistenteMapeado.meta_data.map(
+									(m) => {
+										if (m.key === "precio_usd_web") {
+											return {
+												...m,
+												value: nuevoValorUSD,
+											};
+										}
+										return m;
+									}
+								);
+
+								// Si no existía, lo agregamos al final
+								if (!metaExistente) {
+									productoWoo.meta_data.push({
+										key: "precio_usd_web",
+										value: nuevoValorUSD,
+									});
+								}
 
 								console.log(
-									`🆕 Producto ${item.ART_CODIGO} SKU: ${productoWoo.sku} actualizar`
+									`🆕 Producto ${item.ART_CODIGO} SKU: ${productoWoo.sku} - ${productoWoo.id} actualizar`
 								);
 
 								productosParaActualizar.push(productoWoo);
