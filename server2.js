@@ -28,14 +28,6 @@ const { construirProductoWoo } = require("./helpers/products");
 const { intentarObtenerImagen } = require("./helpers/images");
 const { type } = require("os");
 const logger = require("./src/services/logger");
-const {
-	obtenerTodasLasCategorias,
-	procesarImagenesCategorias,
-} = require("./src/services/categorias-service");
-const {
-	obtenerTodasLasMarcas,
-	procesarMarcasWooDesdeSOAP,
-} = require("./src/services/marcas-service");
 
 const app = express();
 const port = 5000;
@@ -151,6 +143,20 @@ async function procesarProductos() {
 		if (!Array.isArray(productos)) {
 			productos = [productos];
 		}
+
+		const skuInicio = "55144400038"; // <- cambia este al SKU deseado
+		const indiceInicio = productos.findIndex((p) => p.ART_CODIGO === skuInicio);
+
+		if (indiceInicio !== -1) {
+			productos = productos.slice(indiceInicio);
+			logger.info(
+				`🔁 Empezando integración desde SKU ${skuInicio} (índice ${indiceInicio})`
+			);
+		} else {
+			logger.warn(
+				`⚠️ SKU ${skuInicio} no encontrado. Procesando todos los productos.`
+			);
+		}
 		logger.info(`📦 Productos obtenidos desde SOAP: ${productos.length}`);
 
 		// 2. Obtener cotización
@@ -222,6 +228,12 @@ async function procesarProductos() {
 					update: actualizar,
 				});
 
+				// logger.info({
+				// 	...(crear.length > 0 && { creados: response.data.create.length }),
+				// 	...(actualizar.length > 0 && {
+				// 		actualizados: response.data.update.length,
+				// 	}),
+				// });
 				const info = {
 					...(crear.length > 0 && { creados: response.data.create.length }),
 					...(actualizar.length > 0 && {
@@ -235,13 +247,8 @@ async function procesarProductos() {
 			}
 		};
 
-		const categorias = await obtenerTodasLasCategorias();
-		await procesarImagenesCategorias(soapClient, categorias);
-
-		const marcasWp = await obtenerTodasLasMarcas();
-		await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
-
 		const cacheCategorias = new Map();
+
 		const limit = pLimit(5);
 
 		const chunks = chunkArray(productos, 50);
@@ -266,94 +273,6 @@ async function procesarProductos() {
 									item.URL_IMAGEN_PRIMARIA,
 									ext
 								);
-
-								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
-									if (imageUrl) imagenes.push({ src: imageUrl });
-								}
-							}
-
-							if (
-								item.URL_IMAGEN_SECUNDARIA &&
-								item.URL_IMAGEN_SECUNDARIA.includes(".")
-							) {
-								const ext = item.URL_IMAGEN_SECUNDARIA.split(".").pop();
-								const imagenBase64 = await intentarObtenerImagen(
-									soapClient,
-									item.URL_IMAGEN_SECUNDARIA,
-									ext
-								);
-
-								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
-									if (imageUrl) imagenes.push({ src: imageUrl });
-								}
-							}
-
-							if (item.URL_IMAGEN_3 && item.URL_IMAGEN_3.includes(".")) {
-								const ext = item.URL_IMAGEN_3.split(".").pop();
-								const imagenBase64 = await intentarObtenerImagen(
-									soapClient,
-									item.URL_IMAGEN_3,
-									ext
-								);
-
-								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
-									if (imageUrl) imagenes.push({ src: imageUrl });
-								}
-							}
-
-							if (item.URL_IMAGEN_4 && item.URL_IMAGEN_4.includes(".")) {
-								const ext = item.URL_IMAGEN_4.split(".").pop();
-								const imagenBase64 = await intentarObtenerImagen(
-									soapClient,
-									item.URL_IMAGEN_4,
-									ext
-								);
-
-								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
-									if (imageUrl) imagenes.push({ src: imageUrl });
-								}
-							}
-
-							if (item.URL_IMAGEN_5 && item.URL_IMAGEN_5.includes(".")) {
-								const ext = item.URL_IMAGEN_5.split(".").pop();
-								const imagenBase64 = await intentarObtenerImagen(
-									soapClient,
-									item.URL_IMAGEN_5,
-									ext
-								);
-
-								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
-									if (imageUrl) imagenes.push({ src: imageUrl });
-								}
-							}
-
-							if (item.URL_IMAGEN_6 && item.URL_IMAGEN_6.includes(".")) {
-								const ext = item.URL_IMAGEN_6.split(".").pop();
-								const imagenBase64 = await intentarObtenerImagen(
-									soapClient,
-									item.URL_IMAGEN_6,
-									ext
-								);
-
-								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
-									if (imageUrl) imagenes.push({ src: imageUrl });
-								}
-							}
-
-							if (item.URL_IMAGEN_7 && item.URL_IMAGEN_7.includes(".")) {
-								const ext = item.URL_IMAGEN_7.split(".").pop();
-								const imagenBase64 = await intentarObtenerImagen(
-									soapClient,
-									item.URL_IMAGEN_7,
-									ext
-								);
-
 								if (imagenBase64 && !imagenBase64.startsWith("C:")) {
 									const imageUrl = await subirImagenDesdeBase64(imagenBase64);
 									if (imageUrl) imagenes.push({ src: imageUrl });

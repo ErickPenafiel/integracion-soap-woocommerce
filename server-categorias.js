@@ -42,6 +42,7 @@ async function procesarProductos() {
 					productos = [productos];
 				}
 
+				const marca = new Set(productos.map((p) => p.MARCA));
 				const familia = new Set(productos.map((p) => p.FAMILIA));
 				const nivel1 = new Set(productos.map((p) => p.FAMILIA_NIVEL1));
 				const nivel2 = new Set(productos.map((p) => p.FAMILIA_NIVEL2));
@@ -80,6 +81,8 @@ async function procesarProductos() {
 					nivel1: nivel1.size,
 					nivel2: nivel2.size,
 				});
+
+				console.log("Marcas", marca);
 			}
 		);
 	});

@@ -1,3 +1,5 @@
+const logger = require("../src/services/logger");
+
 function redondearGuaranies(valor) {
 	const monto = Math.ceil(parseFloat(valor));
 	if (monto >= 100000) {
@@ -8,28 +10,34 @@ function redondearGuaranies(valor) {
 }
 
 function redondearUSD(valor) {
-	if (valor < 100) {
-		return Math.ceil(valor * 10) / 10;
-	} else if (valor < 1000) {
-		return Math.ceil(valor);
+	const v = parseFloat(valor);
+	if (v < 10) {
+		return Math.ceil(v * 10) / 10;
+	} else if (v < 100) {
+		return Math.ceil(v * 10) / 10;
+	} else if (v < 1000) {
+		return Math.ceil(v);
 	} else {
-		const redondeado = Math.ceil(valor);
-		const unidades = redondeado % 10;
-		return redondeado + (10 - unidades);
+		const entero = Math.ceil(v);
+		const resto = entero % 10;
+		return resto === 0 ? entero : entero + (10 - resto);
 	}
 }
+
 function formatearUSD(valor) {
 	const redondeado = redondearUSD(valor);
-
 	let opcionesFormato;
 
-	if (redondeado < 100) {
+	if (valor < 10) {
+		opcionesFormato = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+	} else if (valor < 100) {
 		opcionesFormato = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
 	} else {
 		opcionesFormato = { minimumFractionDigits: 0, maximumFractionDigits: 0 };
 	}
 
-	return `USD ${redondeado.toLocaleString("en-US", opcionesFormato)}`;
+	logger.info(`USD ${redondeado.toLocaleString("de-DE", opcionesFormato)}`);
+	return `${redondeado.toLocaleString("de-DE", opcionesFormato)}`;
 }
 
 function construirProductoWoo(
@@ -38,27 +46,31 @@ function construirProductoWoo(
 	pdfs,
 	categorias = [],
 	cotizacionDolar = null,
-	marcas
+	marcas,
+	fichaTecnica,
+	dimensional
 ) {
-	let regularUSD = parseFloat(item.PREC_UNITARIO || 0);
-	let webUSD = parseFloat(item.PREC_WEB || 0);
+	let regularUSD = parseFloat(item.PREC_UNITARIO);
+	let webUSD = parseFloat(item.PREC_WEB);
 
 	let regular = regularUSD;
 	let web = webUSD;
 
-	let usdWebFormateado = null;
-
-	if (cotizacionDolar && cotizacionDolar > 0) {
+	// Redondeo de precios en Gs si hay cotización
+	if (
+		cotizacionDolar &&
+		cotizacionDolar > 0 &&
+		!isNaN(regular) &&
+		!isNaN(web)
+	) {
 		regular *= cotizacionDolar;
 		web *= cotizacionDolar;
-
 		regular = redondearGuaranies(regular);
 		web = redondearGuaranies(web);
 	}
 
-	if (!isNaN(webUSD)) {
-		usdWebFormateado = formatearUSD(webUSD);
-	}
+	// Formateo del precio web en USD original
+	let usdWebFormateado = !isNaN(webUSD) ? formatearUSD(webUSD) : null;
 
 	let precios =
 		regular > web
@@ -69,6 +81,32 @@ function construirProductoWoo(
 			: {
 					regular_price: web.toString(),
 			  };
+
+	const meta_data = [
+		{ key: "manual", value: pdfs },
+		{ key: "fichaTecnica", value: fichaTecnica },
+		{ key: "dimensional", value: dimensional },
+		...(usdWebFormateado
+			? [{ key: "precio_usd_web", value: usdWebFormateado }]
+			: []),
+		...(item.UNIDAD_MEDIDA
+			? [{ key: "unidad_medida", value: item.UNIDAD_MEDIDA }]
+			: []),
+		...(item.DATOS_TECNICOS && item.DATOS_TECNICOS !== "SIN DATOS"
+			? [{ key: "datos_tecnicos", value: item.DATOS_TECNICOS }]
+			: []),
+		...(item.SUSTITUTO && item.SUSTITUTO !== "0"
+			? [{ key: "sustituto", value: item.SUSTITUTO }]
+			: []),
+	];
+
+	logger.info(
+		`usdWebFormateado: ${JSON.stringify({
+			usdWebFormateado,
+			regular,
+			web,
+		})}`
+	);
 
 	return {
 		name: item.ART_DESCRIPCION || "Producto SOAP sin nombre",
@@ -113,19 +151,7 @@ function construirProductoWoo(
 		stock_quantity: Number.isFinite(Number(item.TOT_EXIST))
 			? parseInt(item.TOT_EXIST)
 			: 0,
-		meta_data: [
-			{ key: "manual", value: pdfs },
-			{ key: "precio_usd_web", value: usdWebFormateado },
-			...(item.UNIDAD_MEDIDA
-				? [{ key: "unidad_medida", value: item.UNIDAD_MEDIDA }]
-				: []),
-			...(item.DATOS_TECNICOS && item.DATOS_TECNICOS !== "SIN DATOS"
-				? [{ key: "datos_tecnicos", value: item.DATOS_TECNICOS }]
-				: []),
-			...(item.SUSTITUTO && item.SUSTITUTO !== "0"
-				? [{ key: "sustituto", value: item.SUSTITUTO }]
-				: []),
-		],
+		meta_data,
 	};
 }
 

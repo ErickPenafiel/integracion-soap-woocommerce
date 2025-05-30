@@ -172,7 +172,7 @@ async function procesarProductos() {
 
 				// Guardar en un archivo JSON todos los productos
 				const json = JSON.stringify(productos, null, 2);
-				fs.writeFile("productos-all-03.json", json, (err) => {
+				fs.writeFile("productos-all-07.json", json, (err) => {
 					if (err) {
 						console.error("Error al escribir el archivo:", err);
 					} else {
@@ -181,7 +181,7 @@ async function procesarProductos() {
 				});
 
 				// Leer archivo JSON de productos y obtener el total de productos
-				const filePath = path.join(__dirname, "productos-all.json");
+				const filePath = path.join(__dirname, "productos-all-07.json");
 				fs.readFile(filePath, "utf8", (err, data) => {
 					if (err) {
 						console.error("Error al leer el archivo:", err);
@@ -194,17 +194,6 @@ async function procesarProductos() {
 		);
 	});
 }
-
-// cron.schedule("*/30 * * * *", () => {
-// 	console.log("Ejecutando cron job: procesando productos.");
-// 	procesarProductos();
-// });
-
-// cron.schedule("0 */6 * * *", () => {
-// 	console.log("Ejecutando cron job cada 6 horas: procesando productos.");
-// 	procesarProductos();
-// });
-
 app.get("/integrar", (req, res) => {
 	procesarProductos();
 	res.send("Proceso de integración iniciado.");
