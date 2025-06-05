@@ -48,8 +48,11 @@ const wcApi = new WooCommerceRestApi({
 });
 
 const soapUrl = process.env.SOAP_URL;
+const options = { timeout: 15000 };
 
 const cacheBuffersPDF = new Map();
+
+const categoriaJerarquiaCache = new Map();
 
 async function asegurarCategoriaJerarquia(
 	nombreCategoria,
@@ -57,45 +60,79 @@ async function asegurarCategoriaJerarquia(
 	nombreCategoria2
 ) {
 	const niveles = [nombreCategoria, nombreCategoria1, nombreCategoria2]
-		.map((n) => n?.toString().trim().replace(/\s+/g, " "))
-		.filter((n) => n && n.toUpperCase() !== "NULL");
+		.map((n) => n?.toString().trim().replace(/\s+/g, " ").toUpperCase())
+		.filter((n) => n && n !== "NULL");
+
+	logger.info(`✅ Comprobando jerarquía: ${niveles.join(" > ")}`);
 
 	let parentId = 0;
-	let ultimaCategoriaId = null;
+	let rutaActual = [];
 
-	for (const nivel of niveles) {
-		try {
-			const response = await wcApi.get("products/categories", {
-				search: nivel,
-				parent: parentId,
-				per_page: 100,
-			});
+	for (let i = 0; i < niveles.length; i++) {
+		const nivel = niveles[i];
+		rutaActual.push(nivel);
 
-			let categoriaExistente = response.data.find(
-				(cat) => cat.name.toLowerCase() === nivel.toLowerCase()
-			);
+		const claveSimple = nivel;
+		const claveRuta = rutaActual.join(" > ");
 
-			if (categoriaExistente) {
-				ultimaCategoriaId = categoriaExistente.id;
-			} else {
-				// Crear categoría nueva en este nivel
+		if (categoriaJerarquiaCache.has(claveRuta)) {
+			const id = await categoriaJerarquiaCache.get(claveRuta);
+			parentId = id;
+			continue;
+		}
+
+		const promesaCategoria = (async () => {
+			try {
+				const response = await wcApi.get("products/categories", {
+					search: nivel,
+					parent: parentId,
+					per_page: 100,
+				});
+
+				const categoriaExistente = response.data.find(
+					(cat) => cat.name.toLowerCase() === nivel.toLowerCase()
+				);
+
+				if (categoriaExistente) {
+					logger.info(
+						`📁 Categoría existente encontrada: ${claveRuta} (ID: ${categoriaExistente.id})`
+					);
+					return categoriaExistente.id;
+				}
+
 				const nueva = await wcApi.post("products/categories", {
 					name: nivel,
 					parent: parentId !== 0 ? parentId : undefined,
 				});
-				logger.info(`🆕 Categoría ${nivel} creada.`);
-				ultimaCategoriaId = nueva.data.id;
-			}
+				logger.info(`🆕 Categoría creada: ${claveRuta} (ID: ${nueva.data.id})`);
+				return nueva.data.id;
+			} catch (error) {
+				const errorData = error.response?.data || {};
+				logger.error(`❌ Error en categoría "${nivel}": ${error.message}`);
+				logger.error(`📄 Detalle: ${JSON.stringify(errorData, null, 2)}`);
 
-			// El siguiente nivel debe tener este como padre
-			parentId = ultimaCategoriaId;
-		} catch (error) {
-			console.error(`❌ Error asegurando categoría "${nivel}":`, error.message);
-			return null;
+				if (errorData.code === "term_exists" && errorData.data?.resource_id) {
+					logger.warn(
+						`⚠️ Categoría "${nivel}" ya existe. ID: ${errorData.data.resource_id}`
+					);
+					return errorData.data.resource_id;
+				}
+
+				throw error;
+			}
+		})();
+
+		categoriaJerarquiaCache.set(claveRuta, promesaCategoria);
+
+		const categoriaId = await promesaCategoria;
+		parentId = categoriaId;
+
+		if (i === 0 && !categoriaJerarquiaCache.has(claveSimple)) {
+			categoriaJerarquiaCache.set(claveSimple, Promise.resolve(categoriaId));
 		}
 	}
 
-	return ultimaCategoriaId;
+	return parentId;
 }
 
 function chunkArray(array, size) {
@@ -124,7 +161,7 @@ async function crearMarcasBatch(nombresMarcas) {
 }
 
 async function procesarProductos() {
-	soap.createClient(soapUrl, async function (err, soapClient) {
+	soap.createClient(soapUrl, options, async function (err, soapClient) {
 		if (err) {
 			return console.error("Error al crear el cliente SOAP:", err);
 		}
@@ -150,6 +187,19 @@ async function procesarProductos() {
 		let productos = diffgram.NewDataSet.Table;
 		if (!Array.isArray(productos)) {
 			productos = [productos];
+		}
+		const skuInicio = "46450200180";
+		const indiceInicio = productos.findIndex((p) => p.ART_CODIGO === skuInicio);
+
+		if (indiceInicio !== -1) {
+			productos = productos.slice(indiceInicio);
+			logger.info(
+				`🔁 Empezando integración desde SKU ${skuInicio} (índice ${indiceInicio})`
+			);
+		} else {
+			logger.warn(
+				`⚠️ SKU ${skuInicio} no encontrado. Procesando todos los productos.`
+			);
 		}
 		logger.info(`📦 Productos obtenidos desde SOAP: ${productos.length}`);
 
@@ -235,11 +285,11 @@ async function procesarProductos() {
 			}
 		};
 
-		const categorias = await obtenerTodasLasCategorias();
-		await procesarImagenesCategorias(soapClient, categorias);
+		// const categorias = await obtenerTodasLasCategorias();
+		// await procesarImagenesCategorias(soapClient, categorias);
 
-		const marcasWp = await obtenerTodasLasMarcas();
-		await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
+		// const marcasWp = await obtenerTodasLasMarcas();
+		// await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
 
 		const cacheCategorias = new Map();
 		const limit = pLimit(5);
@@ -371,22 +421,25 @@ async function procesarProductos() {
 							}
 
 							const pdfBuffer = await obtenerPDFConCache(item.URL_DOCUMENTOS);
+
 							const pdf = pdfBuffer
-								? await subirPDFaWordPress(pdfBuffer)
+								? await subirPDFaWordPress(pdfBuffer, item.ART_CODIGO)
 								: null;
 
 							const fichaTecnicaBuffer = await obtenerPDFConCache(
 								item.URL_FICHA_TECNICA
 							);
+
 							const fichaTecnica = fichaTecnicaBuffer
-								? await subirPDFaWordPress(fichaTecnicaBuffer)
+								? await subirPDFaWordPress(fichaTecnicaBuffer, item.ART_CODIGO)
 								: null;
 
 							const dimensionalBuffer = await obtenerPDFConCache(
 								item.URL_DIMENSIONAL
 							);
+
 							const dimensional = dimensionalBuffer
-								? await subirPDFaWordPress(dimensionalBuffer)
+								? await subirPDFaWordPress(dimensionalBuffer, item.ART_CODIGO)
 								: null;
 
 							const marcasIds = item.MARCA
@@ -401,38 +454,41 @@ async function procesarProductos() {
 
 							let categoriasIds = [];
 
-							if (!cacheCategorias.has(categoriasName)) {
-								const categoriaId = await asegurarCategoriaJerarquia(
+							let promesaCategoria = cacheCategorias.get(categoriasName);
+
+							if (!promesaCategoria) {
+								promesaCategoria = asegurarCategoriaJerarquia(
 									item.FAMILIA?.trim(),
 									item.FAMILIA_NIVEL1?.trim(),
 									item.FAMILIA_NIVEL2?.trim()
+								).then((id) => {
+									if (!id) {
+										logger.warn(
+											`❌ No se pudo asegurar la categoría: ${categoriasName}, usando fallback 7126`
+										);
+										return 7126;
+									}
+									logger.info(
+										`🆕 Creando categoría: ${categoriasName} (ID: ${id})`
+									);
+									return id;
+								});
+
+								cacheCategorias.set(categoriasName, promesaCategoria);
+							} else {
+								logger.info(
+									`⏳ Esperando creación ya iniciada para categoría: ${categoriasName}`
 								);
-
-								if (categoriaId != null) {
-									cacheCategorias.set(
-										categoriasName,
-										Promise.resolve(categoriaId)
-									);
-									await new Promise((resolve) => setTimeout(resolve, 1500));
-								} else {
-									console.warn(
-										`⚠️ No se pudo crear/obtener categoría para: ${categoriasName}`
-									);
-								}
 							}
 
-							const categoriaIdFinal = await cacheCategorias.get(
-								categoriasName
+							const categoriaIdFinal = await promesaCategoria;
+							categoriasIds = [{ id: categoriaIdFinal }];
+
+							logger.info(
+								`Categoría ID de ${item.ART_CODIGO}: ${JSON.stringify(
+									categoriasIds
+								)}`
 							);
-
-							if (categoriaIdFinal != null) {
-								categoriasIds = [
-									{
-										id: categoriaIdFinal,
-									},
-								];
-							}
-							logger.info(`Categoría ID: ${JSON.stringify(categoriasIds)}`);
 
 							let existente = await wcApi.get("products", {
 								sku: item.ART_CODIGO,

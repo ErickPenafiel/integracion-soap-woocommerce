@@ -54,7 +54,17 @@ async function obtenerTodasLasCategorias() {
 			page: page,
 		});
 
-		categorias.push(...response.data);
+		const newCategorias = response.data.map((categoria) => {
+			return {
+				id: categoria.id,
+				name: categoria.name,
+				slug: categoria.slug,
+				parent: categoria.parent,
+				image: categoria.image ? categoria.image.src : null,
+			};
+		});
+
+		categorias.push(...newCategorias);
 
 		// WooCommerce pone el total de páginas en headers
 		totalPages = parseInt(response.headers["x-wp-totalpages"], 10);

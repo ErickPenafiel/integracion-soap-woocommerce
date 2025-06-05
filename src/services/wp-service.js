@@ -119,7 +119,7 @@ async function verifyImagen(hash) {
 	}
 }
 
-async function subirPDFaWordPress(buffer) {
+async function subirPDFaWordPress(buffer, sku = "") {
 	if (!buffer) return null;
 
 	const hash = crypto.createHash("sha256").update(buffer).digest("hex");
@@ -129,8 +129,6 @@ async function subirPDFaWordPress(buffer) {
 
 		const existingPDFUrl = await verifyManual(hash);
 		if (existingPDFUrl) return existingPDFUrl;
-
-		const MAX_SIZE = 20 * 1024 * 1024;
 
 		const form = new FormData();
 		form.append("file", buffer, {
@@ -160,8 +158,8 @@ async function subirPDFaWordPress(buffer) {
 
 			return uploadResponse.data.source_url;
 		} catch (err) {
-			logger.error(`❌ Error al subir PDF: ${err.message || err}`);
-			console.error(`❌ Error al subir PDF: ${err.message || err}`);
+			logger.error(`❌ Error al subir PDF ${sku}: ${err.message || err}`);
+			console.error(`❌ Error al subir PDF ${sku}: ${err.message || err}`);
 			return null;
 		}
 	});
