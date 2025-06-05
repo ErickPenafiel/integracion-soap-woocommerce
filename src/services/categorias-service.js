@@ -9,10 +9,9 @@ const wcApi = new WooCommerceRestApi({
 	version: "wc/v3",
 });
 
-const { subirImagenDesdeBase64 } = require("./src/services/wp-service");
-
-const { intentarObtenerImagen } = require("./helpers/images");
-const logger = require("./src/services/logger");
+const { intentarObtenerImagen } = require("../../helpers/images");
+const logger = require("./logger");
+const { subirImagenDesdeBase64 } = require("./wp-service");
 
 async function obtenerTodasLasCategorias() {
 	let categorias = [];
@@ -25,9 +24,18 @@ async function obtenerTodasLasCategorias() {
 			page: page,
 		});
 
-		categorias.push(...response.data);
+		const newCategorias = response.data.map((categoria) => {
+			return {
+				id: categoria.id,
+				name: categoria.name,
+				slug: categoria.slug,
+				parent: categoria.parent,
+				image: categoria.image ? categoria.image.src : null,
+			};
+		});
 
-		// WooCommerce pone el total de páginas en headers
+		categorias.push(...newCategorias);
+
 		totalPages = parseInt(response.headers["x-wp-totalpages"], 10);
 		page++;
 	} while (page <= totalPages);

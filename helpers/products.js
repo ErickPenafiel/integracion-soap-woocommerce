@@ -50,6 +50,18 @@ function construirProductoWoo(
 	fichaTecnica,
 	dimensional
 ) {
+	logger.info(
+		JSON.stringify(
+			{
+				sku: item.ART_CODIGO,
+				fichaTecnica,
+				dimensional,
+				pdfs,
+			},
+			null,
+			2
+		)
+	);
 	let regularUSD = parseFloat(item.PREC_UNITARIO);
 	let webUSD = parseFloat(item.PREC_WEB);
 
@@ -84,7 +96,7 @@ function construirProductoWoo(
 
 	const meta_data = [
 		{ key: "manual", value: pdfs },
-		{ key: "fichaTecnica", value: fichaTecnica },
+		{ key: "fichatecnica", value: fichaTecnica },
 		{ key: "dimensional", value: dimensional },
 		...(usdWebFormateado
 			? [{ key: "precio_usd_web", value: usdWebFormateado }]
@@ -101,11 +113,11 @@ function construirProductoWoo(
 	];
 
 	logger.info(
-		`usdWebFormateado: ${JSON.stringify({
-			usdWebFormateado,
-			regular,
-			web,
-		})}`
+		`Metadata para producto ${item.ART_CODIGO}: ${JSON.stringify(
+			meta_data,
+			null,
+			2
+		)}`
 	);
 
 	return {
@@ -152,6 +164,7 @@ function construirProductoWoo(
 			? parseInt(item.TOT_EXIST)
 			: 0,
 		meta_data,
+		status: Number(item.TOT_EXIST) > 0 ? "publish" : "draft",
 	};
 }
 

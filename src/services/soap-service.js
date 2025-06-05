@@ -7,35 +7,83 @@ const xml2js = require("xml2js");
 const crypto = require("crypto");
 const logger = require("./logger");
 
+async function retry(fn, retries = 3, delay = 1000) {
+	for (let i = 0; i < retries; i++) {
+		try {
+			return await fn();
+		} catch (err) {
+			const isLastAttempt = i === retries - 1;
+			const isRetryable =
+				err.code === "ETIMEDOUT" ||
+				err.code === "ECONNRESET" ||
+				err.code === "ECONNABORTED";
+
+			if (isLastAttempt || !isRetryable) throw err;
+
+			console.warn(
+				`🔁 Reintentando (${i + 1}/${retries}) después de error: ${err.code}`
+			);
+			await new Promise((res) => setTimeout(res, delay));
+		}
+	}
+}
+
 async function obtenerImagenDesdeSOAP(soapClient, urlPath) {
 	if (!urlPath) return null; // Si no hay imagen, retornar null
 	const path = urlPath;
 	const match = path.match(/\\(\d+)\\/);
 
+	let sku;
+
 	if (match && match[1]) {
-		const sku = match[1];
-		console.log("ID:", id);
+		sku = match[1];
+		console.log("ID:", sku);
 	} else {
 		console.log("No se encontró un ID válido.");
 	}
 
-	return new Promise((resolve, reject) => {
-		soapClient.servicebus.servicebusSoap12.getWebfile(
-			{ url_path: urlPath },
-			function (err, result) {
-				if (err) {
-					logger.error(`Error al obtener la imagen ${sku}: ${err}`);
-					return resolve(null);
-				}
+	// return new Promise((resolve, reject) => {
+	// 	soapClient.servicebus.servicebusSoap12.getWebfile(
+	// 		{ url_path: urlPath },
+	// 		function (err, result) {
+	// 			if (err) {
+	// 				logger.error(`Error al obtener la imagen ${sku} ${urlPath}: ${err}`);
+	// 				return resolve(null);
+	// 			}
 
-				if (result && result.getWebfileResult) {
-					resolve(result.getWebfileResult);
-				} else {
-					resolve(null);
-				}
-			}
+	// 			if (result && result.getWebfileResult) {
+	// 				resolve(result.getWebfileResult);
+	// 			} else {
+	// 				resolve(null);
+	// 			}
+	// 		}
+	// 	);
+	// });
+
+	try {
+		const result = await retry(
+			() => {
+				return new Promise((resolve, reject) => {
+					soapClient.servicebus.servicebusSoap12.getWebfile(
+						{ url_path: urlPath },
+						(err, result) => {
+							if (err) return reject(err);
+							resolve(result?.getWebfileResult ?? null);
+						}
+					);
+				});
+			},
+			3,
+			2000
+		); // 3 intentos, espera 2 segundos
+
+		return result;
+	} catch (err) {
+		logger.error(
+			`❌ Error al obtener la imagen ${sku} ${urlPath}: ${err.message || err}`
 		);
-	});
+		return null;
+	}
 }
 
 async function obtenerPDFDesdeSOAP(urlPathRaw) {
@@ -68,18 +116,20 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 	</soap:Envelope>`;
 
 	try {
-		const response = await axios.post(
-			`${process.env.SOAP_URL}/servicebus.asmx`,
-			soapEnvelope,
-			{
-				headers: {
-					"Content-Type": "text/xml; charset=utf-8",
-					SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
-				},
-				responseType: "arraybuffer",
-				maxContentType: Infinity,
-				maxBodyLength: Infinity,
-			}
+		const response = await retry(
+			() =>
+				axios.post(`${process.env.SOAP_URL}/servicebus.asmx`, soapEnvelope, {
+					headers: {
+						"Content-Type": "text/xml; charset=utf-8",
+						SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
+					},
+					responseType: "arraybuffer",
+					maxContentType: Infinity,
+					maxBodyLength: Infinity,
+					timeout: 15000,
+				}),
+			3,
+			2000
 		);
 
 		const contentType = response.headers["content-type"] || "";
@@ -142,7 +192,9 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 		}
 	} catch (err) {
 		logger.error(
-			`❌ Error al obtener PDF desde SOAP ${sku}: ${err.message || err}`
+			`❌ Error al obtener PDF desde SOAP ${sku} ${urlPathRaw}: ${
+				err.message || err
+			}`
 		);
 		return null;
 	}
@@ -177,18 +229,23 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 	</soap:Envelope>`;
 
 	try {
-		const response = await axios.post(
-			`${process.env.SOAP_URL}/servicebus.asmx`,
-			soapEnvelope,
-			{
-				headers: {
-					"Content-Type": "text/xml; charset=utf-8",
-					SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
+		const response = await retry(() =>
+			axios.post(
+				`${process.env.SOAP_URL}/servicebus.asmx`,
+				soapEnvelope,
+				{
+					headers: {
+						"Content-Type": "text/xml; charset=utf-8",
+						SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
+					},
+					responseType: "arraybuffer",
+					maxContentType: Infinity,
+					maxBodyLength: Infinity,
+					timeout: 15000,
 				},
-				responseType: "arraybuffer",
-				maxContentType: Infinity,
-				maxBodyLength: Infinity,
-			}
+				3,
+				2000
+			)
 		);
 
 		const contentType = response.headers["content-type"] || "";
@@ -223,7 +280,9 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 		}
 	} catch (err) {
 		logger.error(
-			`❌ Error al obtener PDF desde SOAP ${sku}: ${err.message || err}`
+			`❌ Error al obtener PDF desde SOAP ${sku} ${urlPathRaw}: ${
+				err.message || err
+			}`
 		);
 		return null;
 	}

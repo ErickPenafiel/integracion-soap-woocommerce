@@ -1,5 +1,8 @@
 const WooCommerceRestApi = require("@woocommerce/woocommerce-rest-api").default;
 const path = require("path");
+const { intentarObtenerImagen } = require("../../helpers/images");
+const { subirImagenDesdeBase64 } = require("./wp-service");
+const logger = require("./logger");
 
 const wcApi = new WooCommerceRestApi({
 	url: process.env.WC_URL,
