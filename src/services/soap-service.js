@@ -37,7 +37,6 @@ async function obtenerImagenDesdeSOAP(soapClient, urlPath) {
 
 	if (match && match[1]) {
 		sku = match[1];
-		console.log("ID:", sku);
 	} else {
 		console.log("No se encontró un ID válido.");
 	}
@@ -99,7 +98,6 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 
 	if (match && match[1]) {
 		sku = match[1];
-		console.log("ID:", sku);
 	} else {
 		console.log("No se encontró un ID válido.");
 	}
@@ -212,7 +210,6 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 
 	if (match && match[1]) {
 		sku = match[1];
-		console.log("ID:", sku);
 	} else {
 		console.log("No se encontró un ID válido.");
 	}

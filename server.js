@@ -285,11 +285,11 @@ async function procesarProductos() {
 			}
 		};
 
-		// const categorias = await obtenerTodasLasCategorias();
-		// await procesarImagenesCategorias(soapClient, categorias);
+		const categorias = await obtenerTodasLasCategorias();
+		await procesarImagenesCategorias(soapClient, categorias);
 
-		// const marcasWp = await obtenerTodasLasMarcas();
-		// await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
+		const marcasWp = await obtenerTodasLasMarcas();
+		await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
 
 		const cacheCategorias = new Map();
 		const limit = pLimit(5);
