@@ -43,6 +43,13 @@ async function obtenerTodasLasCategorias() {
 	return categorias;
 }
 
+const limpiarNombre = (nombre) =>
+	nombre
+		?.trim()
+		.toUpperCase()
+		.replace(/[–—\-;,]/g, " ")
+		.replace(/\s+/g, " ");
+
 async function procesarImagenesCategorias(soapClient, categorias) {
 	const args = {};
 
@@ -55,7 +62,8 @@ async function procesarImagenesCategorias(soapClient, categorias) {
 
 	const diffgram = result.get_familiasResult.diffgram;
 	if (!diffgram || !diffgram.NewDataSet || !diffgram.NewDataSet.Table) {
-		return console.error("No se encontraron productos en la respuesta SOAP.");
+		console.error("No se encontraron productos en la respuesta SOAP.");
+		return;
 	}
 
 	let categoriasSoap = diffgram.NewDataSet.Table;
@@ -64,62 +72,101 @@ async function procesarImagenesCategorias(soapClient, categorias) {
 	}
 
 	logger.info(`🏷️ Marcas obtenidas desde SOAP: ${categoriasSoap.length}`);
-	console.log("MarcasSOAP: ", categoriasSoap);
-	console.log("MarcasWP: ", categorias);
+	console.log("MarcasSOAP:", categoriasSoap);
+	console.log("MarcasWP:", categorias);
 
 	for (const item of categoriasSoap) {
-		const rutaRaw = item.FAMILIA1 || item.FAMILIA2;
-		if (!rutaRaw || !rutaRaw.includes("\\")) continue;
+		const rutas = [];
 
-		const partes = rutaRaw.split("\\").filter(Boolean);
-		if (partes.length < 2) continue;
+		const limpiarRuta = (ruta) => ruta?.replace(/\s+/g, " ").toUpperCase();
 
-		const categoriaNombre = partes.length === 2 ? partes[0] : partes[1];
-		const nombreImagen = partes[partes.length - 1];
-		const ext = path.extname(nombreImagen).replace(".", "") || "webp";
+		const partesF2 =
+			limpiarRuta(item.FAMILIA2)?.split("\\").filter(Boolean) || [];
+		const partesF1 =
+			limpiarRuta(item.FAMILIA1)?.split("\\").filter(Boolean) || [];
 
-		const categoria = categorias.find(
-			(c) =>
-				c.name.trim().toUpperCase() === categoriaNombre.trim().toUpperCase()
-		);
+		if (partesF2.length >= 3) rutas.push(partesF2);
+		if (partesF1.length >= 2) rutas.push(partesF1);
 
-		if (!categoria) {
-			logger.warn(`❌ Categoría no encontrada: ${categoriaNombre}`);
-			continue;
-		}
+		for (const partes of rutas) {
+			let categoria = null;
+			const nombreImagen = partes[partes.length - 1];
+			const ext = path.extname(nombreImagen).replace(".", "") || "webp";
 
-		try {
-			const imagenBase64 = await intentarObtenerImagen(
-				soapClient,
-				rutaRaw,
-				ext
-			);
+			if (partes.length >= 3) {
+				// Ruta con padre e hijo
+				const nombrePadre = limpiarNombre(partes[0]);
+				const nombreHija = limpiarNombre(partes[1]);
 
-			if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-				const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+				categoria = categorias.find(
+					(c) =>
+						limpiarNombre(c.name) === nombreHija &&
+						(() => {
+							const padre = categorias.find((p) => p.id === c.parent);
+							return padre && limpiarNombre(padre.name) === nombrePadre;
+						})()
+				);
 
-				if (imageUrl) {
-					logger.info(
-						`📤 Imagen subida para categoría "${categoria.name}" → ${imageUrl}`
+				if (!categoria) {
+					logger.warn(
+						`❌ No se encontró la subcategoría "${nombreHija}" con padre "${nombrePadre}"`
 					);
-
-					await wcApi.put(`products/categories/${categoria.id}`, {
-						image: { src: imageUrl },
-					});
-
-					logger.info(
-						`✅ Imagen actualizada para categoría: ${categoria.name}`
-					);
+					continue;
 				}
+			} else if (partes.length === 2) {
+				// Ruta de una sola categoría
+				const nombreCategoria = limpiarNombre(partes[0]);
+
+				categoria = categorias.find(
+					(c) => limpiarNombre(c.name) === nombreCategoria
+				);
+
+				if (!categoria) {
+					logger.warn(`❌ No se encontró la categoría "${nombreCategoria}"`);
+					continue;
+				}
+			} else {
+				continue; // Ruta inválida
 			}
-		} catch (err) {
-			logger.error(
-				`❌ Error procesando imagen para categoría ${categoriaNombre}: ${err.message}`
-			);
+
+			console.log("Categoria encontrada:", categoria);
+			const rutaCompleta = "\\" + partes.join("\\");
+
+			await subirImagenParaCategoria(soapClient, categoria, rutaCompleta, ext);
 		}
 	}
 
-	logger.info("✅ Proceso de categorias completado.");
+	logger.info("✅ Proceso de categorías completado.");
+}
+
+async function subirImagenParaCategoria(soapClient, categoria, rutaRaw, ext) {
+	try {
+		logger.info(
+			`🕵️ Procesando imagen para categoría "${categoria.name}" desde ruta: ${rutaRaw}`
+		);
+
+		const imagenBase64 = await intentarObtenerImagen(soapClient, rutaRaw, ext);
+
+		if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+			const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+
+			if (imageUrl) {
+				logger.info(
+					`📤 Imagen subida para categoría "${categoria.name}" → ${imageUrl}`
+				);
+
+				await wcApi.put(`products/categories/${categoria.id}`, {
+					image: { src: imageUrl },
+				});
+
+				logger.info(`✅ Imagen actualizada para categoría: ${categoria.name}`);
+			}
+		}
+	} catch (err) {
+		logger.error(
+			`❌ Error procesando imagen para categoría "${categoria.name}": ${err.message}`
+		);
+	}
 }
 
 module.exports = {

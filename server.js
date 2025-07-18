@@ -11,6 +11,10 @@ const WPAPI = require("wpapi");
 const retry = require("async-retry");
 const pLimit = require("p-limit");
 const _ = require("lodash");
+const dns = require("dns");
+
+const url = new URL("https://recordelectric.com/");
+const hostname = url.hostname;
 
 const {
 	obtenerImagenDesdeSOAP,
@@ -36,6 +40,7 @@ const {
 	obtenerTodasLasMarcas,
 	procesarMarcasWooDesdeSOAP,
 } = require("./src/services/marcas-service");
+const { actualizarPreciosDesdeMetaData } = require("./helpers/update-prices");
 
 const app = express();
 const port = 5000;
@@ -45,10 +50,13 @@ const wcApi = new WooCommerceRestApi({
 	consumerKey: process.env.WC_CONSUMER_KEY,
 	consumerSecret: process.env.WC_CONSUMER_SECRET,
 	version: "wc/v3",
+	axiosConfig: {
+		timeout: 300000,
+	},
 });
 
 const soapUrl = process.env.SOAP_URL;
-const options = { timeout: 15000 };
+const options = { timeout: 30000 };
 
 const cacheBuffersPDF = new Map();
 
@@ -81,46 +89,70 @@ async function asegurarCategoriaJerarquia(
 			continue;
 		}
 
-		const promesaCategoria = (async () => {
-			try {
-				const response = await wcApi.get("products/categories", {
-					search: nivel,
-					parent: parentId,
-					per_page: 100,
-				});
+		const promesaCategoria = retry(
+			async (bail) => {
+				try {
+					const response = await wcApi.get("products/categories", {
+						search: nivel,
+						parent: parentId,
+						per_page: 100,
+					});
 
-				const categoriaExistente = response.data.find(
-					(cat) => cat.name.toLowerCase() === nivel.toLowerCase()
-				);
+					const categoriaExistente = response.data.find(
+						(cat) => cat.name.toLowerCase() === nivel.toLowerCase()
+					);
 
-				if (categoriaExistente) {
+					if (categoriaExistente) {
+						logger.info(
+							`📁 Categoría existente encontrada: ${claveRuta} (ID: ${categoriaExistente.id})`
+						);
+						return categoriaExistente.id;
+					}
+
+					const nueva = await wcApi.post("products/categories", {
+						name: nivel,
+						parent: parentId !== 0 ? parentId : undefined,
+					});
+
 					logger.info(
-						`📁 Categoría existente encontrada: ${claveRuta} (ID: ${categoriaExistente.id})`
+						`🆕 Categoría creada: ${claveRuta} (ID: ${nueva.data.id})`
 					);
-					return categoriaExistente.id;
+					return nueva.data.id;
+				} catch (error) {
+					const errorData = error.response?.data || {};
+					logger.error(`❌ Error en categoría "${nivel}": ${error.message}`);
+					logger.error(`📄 Detalle: ${JSON.stringify(errorData, null, 2)}`);
+
+					if (errorData.code === "term_exists" && errorData.data?.resource_id) {
+						logger.warn(
+							`⚠️ Categoría "${nivel}" ya existe. ID: ${errorData.data.resource_id}`
+						);
+						return errorData.data.resource_id;
+					}
+
+					// Si es un error que no vale la pena reintentar, se cancela con bail
+					if (
+						error.response?.status >= 400 &&
+						error.response?.status < 500 &&
+						errorData.code !== "term_exists"
+					) {
+						console.log(
+							"Bailing out due to non-retryable error:",
+							error.message
+						);
+						return bail(error);
+					}
+
+					throw error;
 				}
-
-				const nueva = await wcApi.post("products/categories", {
-					name: nivel,
-					parent: parentId !== 0 ? parentId : undefined,
-				});
-				logger.info(`🆕 Categoría creada: ${claveRuta} (ID: ${nueva.data.id})`);
-				return nueva.data.id;
-			} catch (error) {
-				const errorData = error.response?.data || {};
-				logger.error(`❌ Error en categoría "${nivel}": ${error.message}`);
-				logger.error(`📄 Detalle: ${JSON.stringify(errorData, null, 2)}`);
-
-				if (errorData.code === "term_exists" && errorData.data?.resource_id) {
-					logger.warn(
-						`⚠️ Categoría "${nivel}" ya existe. ID: ${errorData.data.resource_id}`
-					);
-					return errorData.data.resource_id;
-				}
-
-				throw error;
+			},
+			{
+				retries: 3,
+				minTimeout: 500,
+				maxTimeout: 2000,
+				factor: 2,
 			}
-		})();
+		);
 
 		categoriaJerarquiaCache.set(claveRuta, promesaCategoria);
 
@@ -155,7 +187,7 @@ async function crearMarcasBatch(nombresMarcas) {
 	}
 	return new Map(
 		creadas
-			.filter((m) => m && m.name) // ⚠️ filtra las que no tienen name
+			.filter((m) => m && m.name)
 			.map((m) => [m.name.trim().toUpperCase(), m.id])
 	);
 }
@@ -179,28 +211,37 @@ async function procesarProductos() {
 			);
 		});
 
+		console.log("Resultado de getWebProductos:", result);
+		let productos = [];
+
 		const diffgram = result.getWebProductosResult.diffgram;
 		if (!diffgram || !diffgram.NewDataSet || !diffgram.NewDataSet.Table) {
-			return console.error("No se encontraron productos en la respuesta SOAP.");
-		}
-
-		let productos = diffgram.NewDataSet.Table;
-		if (!Array.isArray(productos)) {
-			productos = [productos];
-		}
-		const skuInicio = "46450200180";
-		const indiceInicio = productos.findIndex((p) => p.ART_CODIGO === skuInicio);
-
-		if (indiceInicio !== -1) {
-			productos = productos.slice(indiceInicio);
-			logger.info(
-				`🔁 Empezando integración desde SKU ${skuInicio} (índice ${indiceInicio})`
-			);
+			console.error("No se encontraron productos en la respuesta SOAP.");
+			productos = [];
 		} else {
-			logger.warn(
-				`⚠️ SKU ${skuInicio} no encontrado. Procesando todos los productos.`
-			);
+			productos = diffgram.NewDataSet.Table;
+
+			if (!Array.isArray(productos)) {
+				productos = [productos];
+			}
 		}
+
+		// const skuInicio = "2317631736";
+		// const indiceInicio = productos.findIndex((p) => p.ART_CODIGO === skuInicio);
+
+		// if (indiceInicio !== -1) {
+		// 	productos = productos.slice(indiceInicio, productos.length);
+		// 	logger.info(
+		// 		`🔁 Empezando integración desde SKU ${skuInicio} (índice ${indiceInicio})`
+		// 	);
+		// } else {
+		// 	logger.warn(
+		// 		`⚠️ SKU ${skuInicio} no encontrado. Procesando todos los productos.`
+		// 	);
+		// }
+		// let productos = require("./productos_filtrados.json");
+		// productos = productos.slice(40, 60);
+
 		logger.info(`📦 Productos obtenidos desde SOAP: ${productos.length}`);
 
 		// 2. Obtener cotización
@@ -227,7 +268,6 @@ async function procesarProductos() {
 
 		await new Promise((resolve) => setTimeout(resolve, 3000));
 
-		// Marcas Unicas
 		const nombresMarcasUnicas = new Set(
 			productos
 				.map((item) => item.MARCA)
@@ -239,7 +279,6 @@ async function procesarProductos() {
 		const mapaMarcas = await crearMarcasBatch(nombresMarcasUnicas);
 		logger.info(`🆕 Marcas creadas en WooCommerce ${mapaMarcas.size}`);
 
-		// Obtener todas las marcas existentes
 		const marcasExistentes = await wcApi.get("products/brands", {
 			per_page: 100,
 		});
@@ -253,9 +292,6 @@ async function procesarProductos() {
 			};
 		});
 		const marcasMap = new Map(marcas.map((m) => [m.name, m.id]));
-		// console.log("Marcas mapeadas:", marcasMap);
-
-		// -----------------------------------------------------------------
 
 		const chunkArray = (array, size) => {
 			const result = [];
@@ -265,36 +301,192 @@ async function procesarProductos() {
 			return result;
 		};
 
-		const enviarBatch = async (crear, actualizar) => {
-			try {
-				const response = await wcApi.post("products/batch", {
-					create: crear,
-					update: actualizar,
-				});
+		const retry = require("async-retry");
 
-				const info = {
-					...(crear.length > 0 && { creados: response.data.create.length }),
-					...(actualizar.length > 0 && {
-						actualizados: response.data.update.length,
-					}),
-				};
+		const enviarBatch = async (crear, actualizar, batchSize = 10) => {
+			const crearChunks = chunkArray(crear, batchSize);
+			const actualizarChunks = chunkArray(actualizar, batchSize);
 
-				logger.info(`Resultado de sync: ${JSON.stringify(info)}`);
-			} catch (error) {
-				console.error("❌ Error al enviar batch:", error.message || error);
+			const totalChunks = Math.max(crearChunks.length, actualizarChunks.length);
+
+			for (let i = 0; i < totalChunks; i++) {
+				const miniCrear = crearChunks[i] || [];
+				const miniActualizar = actualizarChunks[i] || [];
+
+				try {
+					await retry(
+						async (bail, attempt) => {
+							try {
+								const response = await wcApi.post("products/batch", {
+									create: miniCrear,
+									update: miniActualizar,
+								});
+
+								logger.info(
+									"RESPUESTA BATCH" + JSON.stringify(response.data, null, 2)
+								);
+
+								if (response.data.errors && response.data.errors.length > 0) {
+									logger.error("❌ Errores detectados en batch CREATE:");
+									logger.error(JSON.stringify(response.data.errors, null, 2));
+								}
+
+								if (response.data.create && response.data.create.length !== 0) {
+									const responseCreate = response.data.create.map((item) => ({
+										id: item.id,
+										permalink: item.permalink,
+										name: item.name,
+									}));
+									logger.info(
+										"Create" + JSON.stringify(responseCreate, null, 2)
+									);
+								}
+
+								if (response.data.update && response.data.update.length !== 0) {
+									const responseUpdate = response.data.update.map((item) => ({
+										id: item.id,
+										permalink: item.permalink,
+										name: item.name,
+									}));
+
+									logger.info(
+										"Update" + JSON.stringify(responseUpdate, null, 2)
+									);
+								}
+
+								const info = {
+									...(miniCrear.length > 0 && {
+										creados: response.data.create.length,
+									}),
+									...(miniActualizar.length > 0 && {
+										actualizados: response.data.update.length,
+									}),
+								};
+
+								logger.info(
+									`✅ Batch ${
+										i + 1
+									}/${totalChunks} completado (intento ${attempt}): ${JSON.stringify(
+										info
+									)}`
+								);
+
+								if (attempt > 1) {
+									logger.info(
+										`🔁 Batch ${
+											i + 1
+										} completado correctamente después de reintento #${attempt}`
+									);
+								}
+							} catch (error) {
+								if (
+									error.response?.status >= 400 &&
+									error.response?.status < 500
+								) {
+									bail(
+										new Error(
+											`Error no recuperable en batch ${i + 1}: ${
+												error.response?.data?.message || error.message
+											}`
+										)
+									);
+									return;
+								}
+								throw error;
+							}
+						},
+						{
+							retries: 3,
+							minTimeout: 1000,
+							maxTimeout: 300000,
+						}
+					);
+				} catch (error) {
+					console.error(
+						`❌ Error al enviar mini batch ${i + 1}:`,
+						error.message || error
+					);
+					logger.error(
+						`❌ Error en mini batch ${i + 1}: ${
+							JSON.stringify(error.response?.data?.message, null, 2) ||
+							error.message ||
+							error
+						}`
+					);
+				}
 			}
 		};
 
-		const categorias = await obtenerTodasLasCategorias();
-		await procesarImagenesCategorias(soapClient, categorias);
+		const obtenerProductoPorSKU = async (sku) => {
+			try {
+				const producto = await retry(
+					async (bail, attempt) => {
+						try {
+							const response = await wcApi.get("products", {
+								sku,
+							});
 
-		const marcasWp = await obtenerTodasLasMarcas();
-		await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
+							logger.info(
+								`✅ Consulta SKU "${sku}" completada (intento ${attempt})`
+							);
+
+							return response.data?.[0] || null;
+						} catch (error) {
+							const status = error.response?.status;
+							const message = error.message?.toLowerCase() || "";
+
+							if (status >= 400 && status < 500 && status !== 429) {
+								bail(
+									new Error(
+										`Error no recuperable al obtener producto con SKU "${sku}": ${
+											error.response?.data?.message || error.message
+										}`
+									)
+								);
+								return;
+							}
+
+							// Si es un error como 'socket hang up' o ECONNRESET, dejarlo pasar para retry
+							if (
+								error.code === "ECONNRESET" ||
+								message.includes("socket hang up")
+							) {
+								logger.warn(
+									`⚠️ Conexión reiniciada (socket hang up) al consultar SKU "${sku}", intento ${attempt}`
+								);
+							}
+
+							throw error; // permite que retry maneje los reintentos
+						}
+					},
+					{
+						retries: 3,
+						minTimeout: 1000,
+						maxTimeout: 10000,
+					}
+				);
+
+				return producto;
+			} catch (error) {
+				console.error(
+					`❌ Error al obtener producto con SKU "${sku}":`,
+					error.message || error
+				);
+				logger.error(
+					`❌ Error al obtener producto con SKU "${sku}": ${
+						JSON.stringify(error.response?.data?.message, null, 2) ||
+						error.message ||
+						error
+					}`
+				);
+				return null;
+			}
+		};
 
 		const cacheCategorias = new Map();
-		const limit = pLimit(5);
+		const limit = pLimit(10);
 
-		const chunks = chunkArray(productos, 50);
+		const chunks = chunkArray(productos, 20);
 
 		for (const chunk of chunks) {
 			const productosParaCrear = [];
@@ -414,6 +606,8 @@ async function procesarProductos() {
 								if (!url) return null;
 								if (cacheBuffersPDF.has(url)) return cacheBuffersPDF.get(url);
 
+								console.log(`🔄 Obteniendo PDF desde SOAP: ${url}`);
+
 								const buffer = await obtenerPDFBufferDesdeSOAP(url);
 								if (buffer) cacheBuffersPDF.set(url, buffer);
 
@@ -490,12 +684,7 @@ async function procesarProductos() {
 								)}`
 							);
 
-							let existente = await wcApi.get("products", {
-								sku: item.ART_CODIGO,
-							});
-							if (existente && existente.data.length > 0) {
-								existente = existente.data[0];
-							}
+							let existente = await obtenerProductoPorSKU(item.ART_CODIGO);
 
 							let productoWoo = construirProductoWoo(
 								item,
@@ -508,7 +697,7 @@ async function procesarProductos() {
 								dimensional
 							);
 
-							if (existente) {
+							if (existente && existente.id && existente.id > 0) {
 								let productoExistenteMapeado =
 									mapearProductoWooExistente(existente);
 
@@ -545,18 +734,42 @@ async function procesarProductos() {
 			}
 		}
 
+		const categoriasCacheSize = cacheCategorias.size;
+		logger.info(`🗂️ Categorías creadas o actualizadas: ${categoriasCacheSize}`);
+		logger.info(
+			`🗂️ Categorías cacheadas: ${Array.from(cacheCategorias.keys())
+				.map((k) => k.split(" > ")[0])
+				.join(", ")}`
+		);
+
+		const productosProcesadosSet = new Set(productos.map((p) => p.ART_CODIGO));
+
+		await actualizarPreciosDesdeMetaData(cotizacion, productosProcesadosSet);
+
+		const marcasWp = await obtenerTodasLasMarcas();
+		await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
+
+		const categorias = await obtenerTodasLasCategorias();
+		await procesarImagenesCategorias(soapClient, categorias);
+
 		logger.info("✅ Proceso de sincronización finalizado.");
 	});
 }
 
-// cron.schedule("*/30 * * * *", () => {
-// 	console.log("Ejecutando cron job: procesando productos.");
-// 	procesarProductos();
-// });
+app.get("/integrar", async (req, res) => {
+	// process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+	dns.lookup(hostname, (err, address, family) => {
+		if (err) throw err;
+		console.log(`IP de ${hostname}: ${address}`);
+	});
 
-app.get("/integrar", (req, res) => {
 	procesarProductos();
 	res.send("Proceso de integración iniciado.");
+});
+
+app.get("/actualizar-manage-stock", async (req, res) => {
+	actualizarManageStockFalseParaTodos();
+	res.send("Proceso de actualización de manage_stock iniciado.");
 });
 
 app.listen(port, () => {

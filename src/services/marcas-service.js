@@ -41,6 +41,13 @@ async function obtenerTodasLasMarcas() {
 	return marcas;
 }
 
+const limpiarNombre = (nombre) =>
+	nombre
+		?.trim()
+		.toUpperCase()
+		.replace(/[–—\-;,]/g, " ")
+		.replace(/\s+/g, " ");
+
 async function procesarMarcasWooDesdeSOAP(soapClient, marcas) {
 	const args = {};
 
@@ -68,8 +75,7 @@ async function procesarMarcasWooDesdeSOAP(soapClient, marcas) {
 
 	for (const marcaWp of marcas) {
 		const marcaSoap = marcasSoap.find(
-			(m) =>
-				m.nombre?.trim().toUpperCase() === marcaWp.name.trim().toUpperCase()
+			(m) => limpiarNombre(m.nombre) === limpiarNombre(marcaWp.name)
 		);
 
 		if (!marcaSoap) {
@@ -91,15 +97,23 @@ async function procesarMarcasWooDesdeSOAP(soapClient, marcas) {
 				);
 
 				if (imagenBase64 && !imagenBase64.startsWith("C:")) {
-					const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+					const imageUrl = await subirImagenDesdeBase64(
+						imagenBase64,
+						true,
+						false
+					);
 
 					if (imageUrl) {
 						logger.info(
 							`📤 Imagen subida para marca "${marcaWp.name}" → ${imageUrl}`
 						);
 
-						await wcApi.put(`products/brands/${marcaWp.id}`, {
+						const response = await wcApi.put(`products/brands/${marcaWp.id}`, {
 							image: { src: imageUrl },
+						});
+
+						console.log({
+							response: response.data,
 						});
 
 						logger.info(`✅ Marca actualizada: ${marcaWp.name}`);
