@@ -6,63 +6,41 @@ const FormData = require("form-data");
 const xml2js = require("xml2js");
 const crypto = require("crypto");
 const logger = require("./logger");
+const retry = require("async-retry");
 
-async function retry(fn, retries = 3, delay = 1000) {
-	for (let i = 0; i < retries; i++) {
-		try {
-			return await fn();
-		} catch (err) {
-			const isLastAttempt = i === retries - 1;
-			const isRetryable =
-				err.code === "ETIMEDOUT" ||
-				err.code === "ECONNRESET" ||
-				err.code === "ECONNABORTED";
+// async function retry(fn, retries = 3, delay = 1000) {
+// 	for (let i = 0; i < retries; i++) {
+// 		try {
+// 			return await fn();
+// 		} catch (err) {
+// 			const isLastAttempt = i === retries - 1;
+// 			const isRetryable =
+// 				err.code === "ETIMEDOUT" ||
+// 				err.code === "ECONNRESET" ||
+// 				err.code === "ECONNABORTED";
 
-			if (isLastAttempt || !isRetryable) throw err;
+// 			if (isLastAttempt || !isRetryable) throw err;
 
-			console.warn(
-				`🔁 Reintentando (${i + 1}/${retries}) después de error: ${err.code}`
-			);
-			await new Promise((res) => setTimeout(res, delay));
-		}
-	}
-}
+// 			console.warn(
+// 				`🔁 Reintentando (${i + 1}/${retries}) después de error: ${err.code}`
+// 			);
+// 			await new Promise((res) => setTimeout(res, delay));
+// 		}
+// 	}
+// }
 
 async function obtenerImagenDesdeSOAP(soapClient, urlPath) {
-	if (!urlPath) return null; // Si no hay imagen, retornar null
-	const path = urlPath;
-	const match = path.match(/\\(\d+)\\/);
+	if (!urlPath) return null;
 
-	let sku;
-
-	if (match && match[1]) {
-		sku = match[1];
-	} else {
-		console.log("No se encontró un ID válido.");
-	}
-
-	// return new Promise((resolve, reject) => {
-	// 	soapClient.servicebus.servicebusSoap12.getWebfile(
-	// 		{ url_path: urlPath },
-	// 		function (err, result) {
-	// 			if (err) {
-	// 				logger.error(`Error al obtener la imagen ${sku} ${urlPath}: ${err}`);
-	// 				return resolve(null);
-	// 			}
-
-	// 			if (result && result.getWebfileResult) {
-	// 				resolve(result.getWebfileResult);
-	// 			} else {
-	// 				resolve(null);
-	// 			}
-	// 		}
-	// 	);
-	// });
+	const match = urlPath.match(/\\(\d+)\\/);
+	const sku = match?.[1] || "desconocido";
 
 	try {
 		const result = await retry(
-			() => {
-				return new Promise((resolve, reject) => {
+			async (bail, attempt) => {
+				logger.info(`🔁 Intento #${attempt} para obtener imagen SKU ${sku}`);
+
+				return await new Promise((resolve, reject) => {
 					soapClient.servicebus.servicebusSoap12.getWebfile(
 						{ url_path: urlPath },
 						(err, result) => {
@@ -72,14 +50,21 @@ async function obtenerImagenDesdeSOAP(soapClient, urlPath) {
 					);
 				});
 			},
-			3,
-			2000
-		); // 3 intentos, espera 2 segundos
+			{
+				retries: 3,
+				minTimeout: 2000,
+				onRetry: (err, attempt) => {
+					logger.warn(`⚠️ Reintentando imagen SKU ${sku}: ${err.message}`);
+				},
+			}
+		);
 
 		return result;
 	} catch (err) {
 		logger.error(
-			`❌ Error al obtener la imagen ${sku} ${urlPath}: ${err.message || err}`
+			`❌ Error al obtener la imagen SKU ${sku} (${urlPath}): ${
+				err.message || err
+			}`
 		);
 		return null;
 	}
@@ -91,9 +76,8 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 			? urlPathRaw
 			: String(urlPathRaw?.url || urlPathRaw || "");
 
-	const path = urlPathRaw;
-	const match = path.match(/\\(\d+)\\/);
-
+	const pathInput = urlPathRaw;
+	const match = pathInput.match(/\\(\d+)\\/);
 	let sku;
 
 	if (match && match[1]) {
@@ -115,23 +99,40 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 
 	try {
 		const response = await retry(
-			() =>
-				axios.post(`${process.env.SOAP_URL}/servicebus.asmx`, soapEnvelope, {
-					headers: {
-						"Content-Type": "text/xml; charset=utf-8",
-						SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
-					},
-					responseType: "arraybuffer",
-					maxContentType: Infinity,
-					maxBodyLength: Infinity,
-					timeout: 15000,
-				}),
-			3,
-			2000
+			async (bail, attempt) => {
+				logger.info(`🔁 Intento #${attempt} de descarga SOAP para SKU ${sku}`);
+				try {
+					return await axios.post(
+						`${process.env.SOAP_URL}/servicebus.asmx`,
+						soapEnvelope,
+						{
+							headers: {
+								"Content-Type": "text/xml; charset=utf-8",
+								SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
+							},
+							responseType: "arraybuffer",
+							maxContentLength: Infinity,
+							maxBodyLength: Infinity,
+							timeout: 15000,
+						}
+					);
+				} catch (error) {
+					if (error.response && error.response.status < 500) {
+						// Error de cliente (4xx), no tiene sentido reintentar
+						bail(error);
+					}
+					throw error; // Reintenta en errores 5xx u otros
+				}
+			},
+			{
+				retries: 3,
+				minTimeout: 2000,
+			}
 		);
 
 		const contentType = response.headers["content-type"] || "";
 		console.log("Tipo de contenido:", contentType);
+
 		const rawBuffer = Buffer.from(response.data);
 
 		if (
@@ -186,11 +187,11 @@ async function obtenerPDFDesdeSOAP(urlPathRaw) {
 			}
 
 			logger.info(`📂 Ruta encontrada (no se sube): ${ruta}`);
-			return null; // No se sube si es una ruta local
+			return null;
 		}
 	} catch (err) {
 		logger.error(
-			`❌ Error al obtener PDF desde SOAP ${sku} ${urlPathRaw}: ${
+			`❌ Error al obtener PDF desde SOAP para SKU ${sku} con URL ${urlPathRaw}: ${
 				err.message || err
 			}`
 		);
@@ -226,23 +227,36 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 	</soap:Envelope>`;
 
 	try {
-		const response = await retry(() =>
-			axios.post(
-				`${process.env.SOAP_URL}/servicebus.asmx`,
-				soapEnvelope,
-				{
-					headers: {
-						"Content-Type": "text/xml; charset=utf-8",
-						SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
-					},
-					responseType: "arraybuffer",
-					maxContentType: Infinity,
-					maxBodyLength: Infinity,
-					timeout: 15000,
-				},
-				3,
-				2000
-			)
+		const response = await retry(
+			async (bail, attempt) => {
+				logger.info(`🔁 Intento #${attempt} para obtener PDF SKU ${sku}`);
+				try {
+					return await axios.post(
+						`${process.env.SOAP_URL}/servicebus.asmx`,
+						soapEnvelope,
+						{
+							headers: {
+								"Content-Type": "text/xml; charset=utf-8",
+								SOAPAction: "http://10.16.3.34:1600/servicebus.asmx/getWebfile",
+							},
+							responseType: "arraybuffer",
+							maxContentLength: Infinity,
+							maxBodyLength: Infinity,
+							timeout: 15000,
+						}
+					);
+				} catch (error) {
+					if (error.response && error.response.status < 500) {
+						// Error de cliente (4xx): no reintentar
+						bail(error);
+					}
+					throw error;
+				}
+			},
+			{
+				retries: 3,
+				minTimeout: 2000,
+			}
 		);
 
 		const contentType = response.headers["content-type"] || "";
@@ -277,7 +291,7 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 		}
 	} catch (err) {
 		logger.error(
-			`❌ Error al obtener PDF desde SOAP ${sku} ${urlPathRaw}: ${
+			`❌ Error al obtener PDF desde SOAP SKU ${sku} ${urlPathRaw}: ${
 				err.message || err
 			}`
 		);

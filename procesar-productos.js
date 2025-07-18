@@ -193,6 +193,11 @@ async function crearMarcasBatch(nombresMarcas) {
 }
 
 async function procesarProductos() {
+	dns.lookup(hostname, (err, address, family) => {
+		if (err) throw err;
+		console.log(`IP de ${hostname}: ${address}`);
+	});
+
 	soap.createClient(soapUrl, options, async function (err, soapClient) {
 		if (err) {
 			return console.error("Error al crear el cliente SOAP:", err);
@@ -756,22 +761,4 @@ async function procesarProductos() {
 	});
 }
 
-app.get("/integrar", async (req, res) => {
-	// process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-	dns.lookup(hostname, (err, address, family) => {
-		if (err) throw err;
-		console.log(`IP de ${hostname}: ${address}`);
-	});
-
-	procesarProductos();
-	res.send("Proceso de integración iniciado.");
-});
-
-app.get("/actualizar-manage-stock", async (req, res) => {
-	actualizarManageStockFalseParaTodos();
-	res.send("Proceso de actualización de manage_stock iniciado.");
-});
-
-app.listen(port, () => {
-	console.log(`Servidor Express escuchando en http://localhost:${port}`);
-});
+module.exports = { procesarProductos };

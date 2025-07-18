@@ -13,11 +13,12 @@ function mapearProductoWooExistente(producto) {
 		weight: producto.weight,
 		manage_stock: producto.manage_stock,
 		stock_quantity: producto.stock_quantity,
-		meta_data: producto.meta_data?.filter((md) =>
-			["manual", "unidad_medida", "datos_tecnicos", "sustituto"].includes(
-				md.key
-			)
-		),
+		meta_data: producto.meta_data?.map((meta) => {
+			return {
+				key: meta.key,
+				value: meta.value,
+			};
+		}),
 	};
 }
 

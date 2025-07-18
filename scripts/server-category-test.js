@@ -14,8 +14,8 @@ const _ = require("lodash");
 
 const {
 	mapearProductoWooExistente,
-} = require("./mappers/mappProductoExistente");
-const { construirProductoWoo } = require("./helpers/products");
+} = require("../mappers/mappProductoExistente");
+const { construirProductoWoo } = require("../helpers/products");
 
 const app = express();
 const port = 5000;
@@ -136,7 +136,7 @@ function printResultados() {
 const resultados = new Map();
 
 async function procesarProductos() {
-	const productos = require("./productos-all-05.json");
+	const productos = require("../productos-all-05.json");
 	console.log("📦 Productos obtenidos desde JSON:", productos.length);
 
 	let cotizacion = 8006;

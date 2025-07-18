@@ -15,17 +15,17 @@ const _ = require("lodash");
 const {
 	obtenerImagenDesdeSOAP,
 	obtenerPDFBufferDesdeSOAP,
-} = require("./src/services/soap-service");
+} = require("../src/services/soap-service");
 const {
 	subirImagenDesdeBase64,
 	subirPDFaWordPress,
-} = require("./src/services/wp-service");
-const { getSoapClient } = require("./src/services/soap-client");
+} = require("../src/services/wp-service");
+const { getSoapClient } = require("../src/services/soap-client");
 const {
 	mapearProductoWooExistente,
-} = require("./mappers/mappProductoExistente");
-const { construirProductoWoo } = require("./helpers/products");
-const { intentarObtenerImagen } = require("./helpers/images");
+} = require("../mappers/mappProductoExistente");
+const { construirProductoWoo } = require("../helpers/products");
+const { intentarObtenerImagen } = require("../helpers/images");
 const { type } = require("os");
 
 const app = express();
