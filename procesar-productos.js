@@ -491,9 +491,9 @@ async function procesarProductos() {
 	};
 
 	const cacheCategorias = new Map();
-	const limit = pLimit(10);
+	const limit = pLimit(3);
 
-	const chunks = chunkArray(productos, 20);
+	const chunks = chunkArray(productos, 5);
 
 	for (const chunk of chunks) {
 		const productosParaCrear = [];
