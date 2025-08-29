@@ -192,16 +192,6 @@ async function crearMarcasBatch(nombresMarcas) {
 	);
 }
 
-function mostrarUsoDeMemoria(etiqueta = "") {
-	const usado = process.memoryUsage();
-	console.log(`\n🔍 Memoria usada ${etiqueta}:`);
-	console.log(
-		Object.entries(usado)
-			.map(([key, value]) => `${key}: ${(value / 1024 / 1024).toFixed(2)} MB`)
-			.join(" | ")
-	);
-}
-
 async function crearSoapClient() {
 	return new Promise((resolve, reject) => {
 		soap.createClient(soapUrl, options, (err, client) => {
@@ -347,9 +337,9 @@ async function procesarProductos() {
 								update: miniActualizar,
 							});
 
-							// logger.info(
-							// 	"RESPUESTA BATCH" + JSON.stringify(response.data, null, 2)
-							// );
+							logger.info(
+								"RESPUESTA BATCH" + JSON.stringify(response.data, null, 2)
+							);
 
 							if (response.data.errors && response.data.errors.length > 0) {
 								logger.error("❌ Errores detectados en batch CREATE:");
@@ -372,7 +362,7 @@ async function procesarProductos() {
 									name: item.name,
 								}));
 
-								// logger.info("Update" + JSON.stringify(responseUpdate, null, 2));
+								logger.info("Update" + JSON.stringify(responseUpdate, null, 2));
 							}
 
 							const info = {
@@ -729,8 +719,6 @@ async function procesarProductos() {
 									`🆕 Producto ${item.ART_CODIGO} SKU: ${productoWoo.sku} actualizar`
 								);
 
-								// console.log({ productoWoo, metadata: productoWoo.meta_data });
-
 								productosParaActualizar.push(productoWoo);
 							}
 						} else {
@@ -778,4 +766,516 @@ async function procesarProductos() {
 	logger.info("✅ Proceso de sincronización finalizado.");
 }
 
-module.exports = { procesarProductos };
+// =========================
+// 1) PRIMERA PASADA (SIN MEDIOS)
+// =========================
+async function procesarProductosBasicos() {
+	dns.lookup(hostname, (err, address) => {
+		if (err) throw err;
+		console.log(`IP de ${hostname}: ${address}`);
+	});
+
+	const soapClient = await crearSoapClient();
+	const args = {};
+
+	// 1. Obtener productos desde SOAP (SIN MEDIOS)
+	const result = await new Promise((resolve, reject) => {
+		soapClient.servicebus.servicebusSoap12.getWebProductos(
+			args,
+			(err, result) => {
+				if (err) return reject(err);
+				resolve(result);
+			}
+		);
+	});
+
+	let productos = [];
+	const diffgram = result.getWebProductosResult.diffgram;
+	if (!diffgram || !diffgram.NewDataSet || !diffgram.NewDataSet.Table) {
+		console.error("No se encontraron productos en la respuesta SOAP.");
+		productos = [];
+	} else {
+		productos = diffgram.NewDataSet.Table;
+		if (!Array.isArray(productos)) productos = [productos];
+	}
+	logger.info(`📦 Productos obtenidos desde SOAP: ${productos.length}`);
+
+	// 2. Cotización
+	const cotizacionResult = await new Promise((resolve, reject) => {
+		soapClient.servicebus.servicebusSoap12.getWebCotizacion(
+			args,
+			(err, result) => {
+				if (err) return reject(err);
+				resolve(result);
+			}
+		);
+	});
+
+	const cotizacionDiffgram = cotizacionResult.getWebCotizacionResult.diffgram;
+	let cotizacion = parseFloat(
+		cotizacionDiffgram.NewDataSet.Table.COTIZACION.replace(",", ".")
+	);
+	if (isNaN(cotizacion)) {
+		console.error(`Cotización no válida: ${cotizacion}`);
+		return;
+	}
+	logger.info(`💵 Cotización obtenida desde SOAP: ${cotizacion}`);
+
+	await new Promise((r) => setTimeout(r, 3000));
+
+	// ======== Marcas (igual que antes)
+	const nombresMarcasUnicas = new Set(
+		productos
+			.map((item) => item.MARCA)
+			.filter((nombre) => nombre && nombre !== "NULL")
+			.map((nombre) => nombre.trim().toUpperCase())
+	);
+	logger.info(`Marcas únicas: ${nombresMarcasUnicas.size}`);
+	const mapaMarcas = await crearMarcasBatch(nombresMarcasUnicas);
+	logger.info(`🆕 Marcas creadas en WooCommerce ${mapaMarcas.size}`);
+
+	const marcasExistentes = await wcApi.get("products/brands", {
+		per_page: 100,
+	});
+	logger.info(`Marcas existentes: ${marcasExistentes.data.length}`);
+
+	const marcas = marcasExistentes.data.map((m) => ({
+		id: m.id,
+		name: m.name.trim().toUpperCase(),
+	}));
+	const marcasMap = new Map(marcas.map((m) => [m.name, m.id]));
+
+	// ======== Helpers batch (ya los tienes; los reutilizo tal cual)
+	const enviarBatch = async (crear, actualizar, batchSize = 20) => {
+		const crearChunks = chunkArray(crear, batchSize);
+		const actualizarChunks = chunkArray(actualizar, batchSize);
+		const totalChunks = Math.max(crearChunks.length, actualizarChunks.length);
+
+		for (let i = 0; i < totalChunks; i++) {
+			const miniCrear = crearChunks[i] || [];
+			const miniActualizar = actualizarChunks[i] || [];
+
+			try {
+				await retry(
+					async (bail) => {
+						try {
+							const response = await wcApi.post("products/batch", {
+								create: miniCrear,
+								update: miniActualizar,
+							});
+							if (response.data.errors?.length) {
+								logger.error("❌ Errores detectados en batch CREATE/UPDATE:");
+								logger.error(JSON.stringify(response.data.errors, null, 2));
+							}
+						} catch (error) {
+							if (
+								error.response?.status >= 400 &&
+								error.response?.status < 500
+							) {
+								bail(
+									new Error(
+										`Error no recuperable en batch ${i + 1}: ${
+											error.response?.data?.message || error.message
+										}`
+									)
+								);
+								return;
+							}
+							throw error;
+						}
+					},
+					{ retries: 3, minTimeout: 1000, maxTimeout: 300000 }
+				);
+			} catch (error) {
+				logger.error(
+					`❌ Error en mini batch ${i + 1}: ${
+						error.response?.data?.message || error.message || error
+					}`
+				);
+			}
+		}
+	};
+
+	const obtenerProductoPorSKU = async (sku) => {
+		try {
+			const producto = await retry(
+				async (bail) => {
+					try {
+						const response = await wcApi.get("products", { sku });
+						return response.data?.[0] || null;
+					} catch (error) {
+						const status = error.response?.status;
+						if (status >= 400 && status < 500 && status !== 429) {
+							bail(
+								new Error(
+									`Error no recuperable al obtener producto con SKU "${sku}": ${
+										error.response?.data?.message || error.message
+									}`
+								)
+							);
+							return;
+						}
+						throw error;
+					}
+				},
+				{ retries: 3, minTimeout: 1000, maxTimeout: 10000 }
+			);
+			return producto;
+		} catch (error) {
+			logger.error(
+				`❌ Error al obtener producto con SKU "${sku}": ${
+					error.message || error
+				}`
+			);
+			return null;
+		}
+	};
+
+	const cacheCategorias = new Map();
+	const limit = pLimit(3);
+	const chunks = chunkArray(productos, 20);
+
+	for (const chunk of chunks) {
+		const productosParaCrear = [];
+		const productosParaActualizar = [];
+
+		await Promise.all(
+			chunk.map((item) =>
+				limit(async () => {
+					try {
+						// ======== CATEGORÍAS (igual)
+						const categoriasName = [
+							item.FAMILIA?.trim(),
+							item.FAMILIA_NIVEL1?.trim(),
+							item.FAMILIA_NIVEL2?.trim(),
+						].join(" > ");
+
+						let promesaCategoria = cacheCategorias.get(categoriasName);
+						if (!promesaCategoria) {
+							promesaCategoria = asegurarCategoriaJerarquia(
+								item.FAMILIA?.trim(),
+								item.FAMILIA_NIVEL1?.trim(),
+								item.FAMILIA_NIVEL2?.trim()
+							).then((id) => id || 7126);
+							cacheCategorias.set(categoriasName, promesaCategoria);
+						}
+						const categoriaIdFinal = await promesaCategoria;
+						const categoriasIds = [{ id: categoriaIdFinal }];
+
+						// ======== MARCAS
+						const marcasIds = item.MARCA
+							? [marcasMap.get(item.MARCA.trim().toUpperCase())]
+							: [];
+
+						// ======== CONSTRUIR PRODUCTO (SIN IMAGENES/PDFS)
+						const imagenes = []; // << vacío en primera pasada
+						const pdf = null,
+							fichaTecnica = null,
+							dimensional = null;
+
+						let existente = await obtenerProductoPorSKU(item.ART_CODIGO);
+						let productoWoo = construirProductoWoo(
+							item,
+							imagenes,
+							pdf,
+							categoriasIds,
+							cotizacion,
+							marcasIds,
+							fichaTecnica,
+							dimensional
+						);
+
+						if (existente?.id > 0) {
+							let productoExistenteMapeado =
+								mapearProductoWooExistente(existente);
+
+							// Eliminamos del diff los campos de imágenes y PDFs (no comparamos aquí)
+							productoWoo.images = undefined;
+							productoExistenteMapeado.images = undefined;
+
+							if (!_.isEqual(productoWoo, productoExistenteMapeado)) {
+								productoWoo.id = existente.id;
+								productosParaActualizar.push(productoWoo);
+							}
+						} else {
+							productosParaCrear.push(productoWoo);
+						}
+					} catch (error) {
+						logger.error(
+							`❌ Error procesando SKU ${item.ART_CODIGO}: ${
+								error.message || error
+							}`
+						);
+					}
+				})
+			)
+		);
+
+		if (productosParaCrear.length > 0 || productosParaActualizar.length > 0) {
+			await enviarBatch(productosParaCrear, productosParaActualizar);
+			await new Promise((resolve) => setTimeout(resolve, 3000));
+		}
+	}
+
+	// Mantenemos tus pasos posteriores (precios por metadata, marcas/categorías imágenes, etc.)
+	const productosProcesadosSet = new Set(productos.map((p) => p.ART_CODIGO));
+	await actualizarPreciosDesdeMetaData(cotizacion, productosProcesadosSet);
+
+	const marcasWp = await obtenerTodasLasMarcas();
+	await procesarMarcasWooDesdeSOAP(soapClient, marcasWp);
+
+	const categorias = await obtenerTodasLasCategorias();
+	await procesarImagenesCategorias(soapClient, categorias);
+
+	logger.info("✅ Primera pasada sin medios finalizada.");
+}
+
+// =========================
+// 2) SEGUNDA PASADA (SOLO MEDIOS)
+// =========================
+async function actualizarMediosProductos(itemsMedios) {
+	// itemsMedios: array de objetos que incluyen al menos ART_CODIGO y cualquier combinación de:
+	// URL_IMAGEN_PRIMARIA..URL_IMAGEN_7, URL_DOCUMENTOS, URL_FICHA_TECNICA, URL_DIMENSIONAL
+
+	const soapClient = await crearSoapClient();
+	const cacheBuffersPDF = new Map(); // local para esta corrida
+
+	const obtenerProductoPorSKU = async (sku) => {
+		try {
+			const response = await wcApi.get("products", { sku });
+			return response.data?.[0] || null;
+		} catch (e) {
+			logger.error(
+				`❌ Buscando SKU ${sku} para medios: ${
+					e.response?.data?.message || e.message
+				}`
+			);
+			return null;
+		}
+	};
+
+	async function obtenerPDFConCache(url) {
+		if (!url) return null;
+		if (cacheBuffersPDF.has(url)) return cacheBuffersPDF.get(url);
+		const buffer = await obtenerPDFBufferDesdeSOAP(url);
+		if (buffer) cacheBuffersPDF.set(url, buffer);
+		return buffer;
+	}
+
+	const construirImagenes = async (item) => {
+		const campos = [
+			"URL_IMAGEN_PRIMARIA",
+			"URL_IMAGEN_SECUNDARIA",
+			"URL_IMAGEN_3",
+			"URL_IMAGEN_4",
+			"URL_IMAGEN_5",
+			"URL_IMAGEN_6",
+			"URL_IMAGEN_7",
+		];
+		const imagenes = [];
+		for (const campo of campos) {
+			const v = item[campo];
+			if (v && v.includes(".")) {
+				const ext = v.split(".").pop();
+				const imagenBase64 = await intentarObtenerImagen(soapClient, v, ext);
+				if (imagenBase64 && !imagenBase64.startsWith("C:")) {
+					const imageUrl = await subirImagenDesdeBase64(imagenBase64);
+					if (imageUrl) imagenes.push({ src: imageUrl });
+				}
+			}
+		}
+		return imagenes;
+	};
+
+	const construirPDFs = async (item) => {
+		// Devuelve objeto con URLs subidas o nulls
+		const out = { documentos: null, fichaTecnica: null, dimensional: null };
+
+		const bufDoc = await obtenerPDFConCache(item.URL_DOCUMENTOS);
+		if (bufDoc)
+			out.documentos = await subirPDFaWordPress(bufDoc, item.ART_CODIGO);
+
+		const bufFT = await obtenerPDFConCache(item.URL_FICHA_TECNICA);
+		if (bufFT)
+			out.fichaTecnica = await subirPDFaWordPress(bufFT, item.ART_CODIGO);
+
+		const bufDim = await obtenerPDFConCache(item.URL_DIMENSIONAL);
+		if (bufDim)
+			out.dimensional = await subirPDFaWordPress(bufDim, item.ART_CODIGO);
+
+		return out;
+	};
+
+	// Batch update por tramos
+	const enviarBatch = async (actualizar, batchSize = 20) => {
+		const actualizarChunks = chunkArray(actualizar, batchSize);
+		for (let i = 0; i < actualizarChunks.length; i++) {
+			const payload = { update: actualizarChunks[i] };
+			try {
+				await retry(
+					async (bail) => {
+						try {
+							const resp = await wcApi.post("products/batch", payload);
+							if (resp.data.errors?.length) {
+								logger.error("❌ Errores en batch de medios:");
+								logger.error(JSON.stringify(resp.data.errors, null, 2));
+							}
+						} catch (error) {
+							if (
+								error.response?.status >= 400 &&
+								error.response?.status < 500
+							) {
+								bail(
+									new Error(
+										`Error no recuperable batch medios ${i + 1}: ${
+											error.response?.data?.message || error.message
+										}`
+									)
+								);
+								return;
+							}
+							throw error;
+						}
+					},
+					{ retries: 3, minTimeout: 1000, maxTimeout: 60000 }
+				);
+			} catch (e) {
+				logger.error(`❌ Falló batch medios ${i + 1}: ${e.message || e}`);
+			}
+		}
+	};
+
+	const limit = pLimit(3);
+	const updates = [];
+
+	await Promise.all(
+		itemsMedios.map((item) =>
+			limit(async () => {
+				try {
+					const existente = await obtenerProductoPorSKU(item.ART_CODIGO);
+					if (!existente?.id) {
+						logger.warn(
+							`⚠️ SKU ${item.ART_CODIGO} no existe en Woo; saltando medios.`
+						);
+						return;
+					}
+
+					const imagenes = await construirImagenes(item);
+					const pdfs = await construirPDFs(item);
+
+					// Preparar meta_data para PDFs si usas meta keys personalizados
+					const meta_data = [];
+					if (pdfs.documentos)
+						meta_data.push({
+							key: "_pdf_documentos_url",
+							value: pdfs.documentos,
+						});
+					if (pdfs.fichaTecnica)
+						meta_data.push({
+							key: "_pdf_ficha_tecnica_url",
+							value: pdfs.fichaTecnica,
+						});
+					if (pdfs.dimensional)
+						meta_data.push({
+							key: "_pdf_dimensional_url",
+							value: pdfs.dimensional,
+						});
+
+					const updateObj = {
+						id: existente.id,
+					};
+
+					// Solo setear imágenes si trajimos alguna
+					if (imagenes.length > 0) {
+						updateObj.images = imagenes;
+					}
+
+					// Agregar meta si corresponde
+					if (meta_data.length > 0) {
+						updateObj.meta_data = [
+							...(existente.meta_data || []),
+							...meta_data,
+						];
+					}
+
+					// Si no hay nada que actualizar, salta
+					if (!updateObj.images && !updateObj.meta_data) return;
+
+					updates.push(updateObj);
+				} catch (e) {
+					logger.error(
+						`❌ Error medios SKU ${item.ART_CODIGO}: ${e.message || e}`
+					);
+				}
+			})
+		)
+	);
+
+	if (updates.length > 0) {
+		await enviarBatch(updates, 20);
+		logger.info(`✅ Medios actualizados para ${updates.length} productos.`);
+	} else {
+		logger.info("ℹ️ No hubo medios para actualizar.");
+	}
+}
+
+// =========================
+// 3) QUIÉNES NECESITAN MEDIOS
+// =========================
+async function obtenerProductosQueRequierenMedios({
+	pageSize = 100,
+	maxPages = 50,
+} = {}) {
+	// Revisa Woo y detecta productos con imágenes faltantes o PDFs faltantes.
+	// Devuelve un array de SKUs (ART_CODIGO) que requieren segunda pasada.
+
+	const SKUsPendientes = new Set();
+
+	for (let page = 1; page <= maxPages; page++) {
+		let data = [];
+		try {
+			const resp = await wcApi.get("products", {
+				per_page: pageSize,
+				page,
+			});
+			data = resp.data || [];
+			if (data.length === 0) break;
+		} catch (e) {
+			logger.error(
+				`❌ Error paginando productos Woo (page ${page}): ${e.message || e}`
+			);
+			break;
+		}
+
+		for (const p of data) {
+			const sku = p.sku?.toString().trim();
+			if (!sku) continue;
+
+			const sinImagenes = !Array.isArray(p.images) || p.images.length === 0;
+
+			// Meta-keys que usamos arriba para PDFs
+			const meta = Array.isArray(p.meta_data) ? p.meta_data : [];
+			const getMeta = (k) => meta.find((m) => m?.key === k)?.value;
+			const faltaDocs = !getMeta("_pdf_documentos_url");
+			const faltaFT = !getMeta("_pdf_ficha_tecnica_url");
+			const faltaDim = !getMeta("_pdf_dimensional_url");
+
+			if (sinImagenes || faltaDocs || faltaFT || faltaDim) {
+				SKUsPendientes.add(sku);
+			}
+		}
+	}
+
+	return Array.from(SKUsPendientes);
+}
+
+// =========================
+// EXPORTS
+// =========================
+module.exports = {
+	procesarProductosBasicos, // primera pasada (sin imágenes/PDFs)
+	actualizarMediosProductos, // segunda pasada, solo medios + ART_CODIGO
+	obtenerProductosQueRequierenMedios, // utilidad para pedir al backend solo los que faltan
+	// Si quieres mantener el antiguo "procesarProductos":
+	procesarProductos, // (tu función original intacta, por si acaso)
+};

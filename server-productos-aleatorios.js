@@ -170,8 +170,12 @@ async function procesarProductos() {
 					productos = [productos];
 				}
 
+				productos = productos.filter((item) => {
+					return item.MARCA === "MACROLED";
+				});
+
 				const json = JSON.stringify(productos, null, 2);
-				fs.writeFile("productos-all-12.json", json, (err) => {
+				fs.writeFile("productos-all-18.json", json, (err) => {
 					if (err) {
 						console.error("Error al escribir el archivo:", err);
 					} else {
@@ -179,8 +183,7 @@ async function procesarProductos() {
 					}
 				});
 
-				// Leer archivo JSON de productos y obtener el total de productos
-				const filePath = path.join(__dirname, "productos-all-12.json");
+				const filePath = path.join(__dirname, "productos-all-18.json");
 				fs.readFile(filePath, "utf8", (err, data) => {
 					if (err) {
 						console.error("Error al leer el archivo:", err);

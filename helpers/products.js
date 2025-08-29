@@ -32,13 +32,13 @@ function formatearUSD(valor) {
 
 function construirProductoWoo(
 	item,
-	imagenes,
-	pdfs,
+	imagenes, // puede venir undefined
+	pdfs, // puede venir undefined
 	categorias = [],
 	cotizacionDolar = null,
-	marcas,
-	fichaTecnica,
-	dimensional
+	marcas = [],
+	fichaTecnica, // puede venir undefined
+	dimensional // puede venir undefined
 ) {
 	const parsePrecio = (valor) =>
 		isNaN(valor) || valor === null || valor === undefined || valor === ""
@@ -77,21 +77,6 @@ function construirProductoWoo(
 		}
 	}
 
-	logger.info(
-		JSON.stringify(
-			{
-				sku: item.ART_CODIGO,
-				fichaTecnica,
-				dimensional,
-				pdfs,
-				regular,
-				web,
-			},
-			null,
-			2
-		)
-	);
-
 	const precios = {};
 	if (web !== null && !isNaN(web)) {
 		if (regular !== null && regular > web) {
@@ -124,31 +109,29 @@ function construirProductoWoo(
 	};
 
 	const buildMetaData = () => {
-		const baseMeta = [
-			{ key: "manual", value: pdfs },
-			{ key: "fichatecnica", value: fichaTecnica },
-			{ key: "dimensional", value: dimensional },
-		];
+		const meta = [];
 
-		const adicionales = [
-			usdWebFormateado && { key: "precio_usd_web", value: usdWebFormateado },
-			item.UNIDAD_MEDIDA && { key: "unidad_medida", value: item.UNIDAD_MEDIDA },
-			item.DATOS_TECNICOS !== "SIN DATOS" && {
-				key: "datos_tecnicos",
-				value: item.DATOS_TECNICOS,
-			},
-			item.SUSTITUTO &&
-				item.SUSTITUTO !== "0" && {
-					key: "sustituto",
-					value: item.SUSTITUTO,
-				},
-			item.SNP && {
-				key: "snp",
-				value: item.SNP,
-			},
-		].filter(Boolean);
+		// ✅ Solo push si existen
+		if (pdfs) meta.push({ key: "manual", value: pdfs });
+		if (fichaTecnica) meta.push({ key: "fichatecnica", value: fichaTecnica });
+		if (dimensional) meta.push({ key: "dimensional", value: dimensional });
 
-		return [...baseMeta, ...adicionales];
+		if (usdWebFormateado)
+			meta.push({ key: "precio_usd_web", value: usdWebFormateado });
+		if (item.UNIDAD_MEDIDA)
+			meta.push({ key: "unidad_medida", value: item.UNIDAD_MEDIDA });
+		if (item.DATOS_TECNICOS && item.DATOS_TECNICOS !== "SIN DATOS") {
+			meta.push({ key: "datos_tecnicos", value: item.DATOS_TECNICOS });
+		}
+		if (item.SUSTITUTO && item.SUSTITUTO !== "0") {
+			meta.push({ key: "sustituto", value: item.SUSTITUTO });
+		}
+		if (item.SNP) meta.push({ key: "snp", value: item.SNP });
+		if (item.FILTRO1) meta.push({ key: "filtro1", value: item.FILTRO1 });
+		if (item.FILTRO2) meta.push({ key: "filtro2", value: item.FILTRO2 });
+		if (item.FILTRO3) meta.push({ key: "filtro3", value: item.FILTRO3 });
+
+		return meta;
 	};
 
 	const dimensions =
@@ -190,27 +173,17 @@ function construirProductoWoo(
 			break;
 	}
 
-	const meta_data = buildMetaData();
-
-	logger.info(
-		`Metadata para producto ${item.ART_CODIGO}: ${JSON.stringify(
-			meta_data,
-			null,
-			2
-		)}`
-	);
-
-	return {
+	const base = {
 		name: item.ART_DESCRIPCION || "Producto SOAP sin nombre",
 		type: "simple",
 		...precios,
 		manage_stock: false,
 		sku: item.ART_CODIGO || "",
 		status: "publish",
-		brands: marcas.filter((id) => id).map((id) => ({ id })),
+		brands: (marcas || []).filter((id) => id).map((id) => ({ id })),
 		description: item.ART_DESCRIPCION || "",
-		images: imagenes,
-		categories: categorias,
+		// images: (solo si hay)
+		// categories: (solo si hay)
 		tags: buildTags(),
 		attributes:
 			item.MARCA && item.MARCA !== "SIN"
@@ -222,12 +195,74 @@ function construirProductoWoo(
 		stock_quantity: Number.isFinite(existencia) ? parseInt(item.TOT_EXIST) : 0,
 		stock_status,
 		backorders,
-		meta_data,
+		meta_data: buildMetaData(),
 		catalog_visibility,
 	};
+
+	if (imagenes && imagenes.length > 0) {
+		base.images = imagenes;
+	}
+	if (categorias && categorias.length > 0) {
+		base.categories = categorias;
+	}
+
+	return base;
+}
+
+/**
+ * Construye un payload de actualización SOLO con imágenes y PDFs para un producto existente.
+ *
+ * - images: arreglo [{ src }]
+ * - meta_data:
+ *      manual       -> URL del PDF de manual
+ *      fichatecnica -> URL del PDF de ficha técnica
+ *      dimensional  -> URL del PDF dimensional
+ *
+ * NOTA: Solo agrega las claves que se envían definidas (truthy), así evitamos
+ *       sobreescribir metadatos existentes cuando no hay nuevos valores.
+ *
+ * @param {number} existenteId
+ * @param {Array<{src: string}>} [imagenes]     // opcional
+ * @param {string} [pdfManual]                   // opcional
+ * @param {string} [pdfFichaTecnica]             // opcional
+ * @param {string} [pdfDimensional]              // opcional
+ * @returns {{ id: number, images?: Array<{src:string}>, meta_data?: Array<{key:string,value:any}> }}
+ */
+function construirActualizacionImagenesYPdfs(
+	existenteId,
+	imagenes,
+	pdfManual,
+	pdfFichaTecnica,
+	pdfDimensional
+) {
+	const payload = { id: existenteId };
+
+	if (Array.isArray(imagenes) && imagenes.length > 0) {
+		payload.images = imagenes;
+	}
+
+	const meta_data = [];
+	if (pdfManual) meta_data.push({ key: "manual", value: pdfManual });
+	if (pdfFichaTecnica)
+		meta_data.push({ key: "fichatecnica", value: pdfFichaTecnica });
+	if (pdfDimensional)
+		meta_data.push({ key: "dimensional", value: pdfDimensional });
+
+	if (meta_data.length > 0) {
+		payload.meta_data = meta_data;
+	}
+
+	if (!payload.images && !payload.meta_data) {
+		logger.warn(
+			`construirActualizacionImagenesYPdfs: sin cambios para ID ${existenteId}`
+		);
+	}
+
+	return payload;
 }
 
 module.exports = {
 	construirProductoWoo,
 	redondearGuaranies,
+	construirActualizacionImagenesYPdfs,
 };

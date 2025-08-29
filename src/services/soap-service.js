@@ -260,6 +260,7 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 		);
 
 		const contentType = response.headers["content-type"] || "";
+		console.log("Tipo de contenido:", contentType);
 		const rawBuffer = Buffer.from(response.data);
 
 		if (
@@ -282,9 +283,13 @@ async function obtenerPDFBufferDesdeSOAP(urlPathRaw) {
 				];
 
 			if (!ruta) {
-				logger.error("❌ No se encontró la ruta en el XML.");
+				logger.error(
+					`❌ No se encontró la ruta en el XML. ${sku}: ${urlPathRaw}`
+				);
 			} else {
-				logger.info(`📂 Ruta encontrada (no se sube): ${ruta}`);
+				logger.info(
+					`📂 Ruta encontrada (no se sube) ${sku} ${urlPathRaw}: ${ruta}`
+				);
 			}
 
 			return null;

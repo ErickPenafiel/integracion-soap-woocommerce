@@ -88,6 +88,13 @@ async function subirImagenDesdeBase64(
 			data = matches[2];
 		} else {
 			mimeType = detectarMimeDesdeBase64(base64);
+
+			if (mimeType === "application/octet-stream") {
+				logger.warn(
+					"⚠️ Tipo MIME no reconocido, se asume image/jpeg por defecto."
+				);
+				mimeType = "image/jpeg";
+			}
 		}
 
 		let buffer = Buffer.from(data, "base64");

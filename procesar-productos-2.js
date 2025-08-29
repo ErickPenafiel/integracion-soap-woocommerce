@@ -211,7 +211,7 @@ async function crearSoapClient() {
 	});
 }
 
-async function procesarProductos() {
+async function procesarMediaProductos() {
 	dns.lookup(hostname, (err, address, family) => {
 		if (err) throw err;
 		console.log(`IP de ${hostname}: ${address}`);
