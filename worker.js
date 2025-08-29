@@ -15,6 +15,7 @@ require("dotenv").config();
 		exitCode = 1;
 	}
 
+	//Sync images
 	try {
 		console.log("▶️ Iniciando actualización de medios (imágenes + PDFs)...");
 		await procesarSoloMedia();
