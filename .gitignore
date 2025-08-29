@@ -7,3 +7,5 @@ dist
 /local_storage
 
 *.xlsx
+
+/logs
